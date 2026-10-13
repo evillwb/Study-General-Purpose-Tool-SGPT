@@ -1,4 +1,4 @@
-# Editing Easy Exam in VS Code
+# Editing SGPT in VS Code
 
 You don't need Claude Code to work on this project. It is plain Python plus one HTML page,
 and VS Code is all you need to edit, run, debug and push changes.
@@ -24,19 +24,19 @@ and VS Code is all you need to edit, run, debug and push changes.
 
 Open **Run and Debug** (`Ctrl+Shift+D`), pick a configuration and press ▶ (or `F5`):
 
-- **Easy Exam app**: starts the web app and opens it in your browser.
-- **Easy Exam command line (…)**: example command-line runs. Change their `args` in
+- **SGPT app**: starts the web app and opens it in your browser.
+- **SGPT command line (…)**: example command-line runs. Change their `args` in
   `.vscode/launch.json`.
 
-Or use the terminal: `python -m easy_exam.app`, or `python -m easy_exam --help`.
+Or use the terminal: `python -m sgpt.app`, or `python -m sgpt --help`.
 
 After you edit the Python code, stop the app (■) and start it again. After you edit only
-`easy_exam/web/*` files, refreshing the browser is enough.
+`sgpt/web/*` files, refreshing the browser is enough.
 
 ## 3. Debug
 
 Click left of a line number to set a breakpoint, for example in `write_questions` in
-`easy_exam/generator.py`, then press `F5`. When a request reaches that line, VS Code pauses
+`sgpt/generator.py`, then press `F5`. When a request reaches that line, VS Code pauses
 and you can inspect variables such as `prompt` or `reply`.
 
 For the page itself, open your browser's developer tools (`F12`) and use the **Console**
@@ -65,5 +65,5 @@ git push
 ## Where to start
 
 See the "Where to change things" table in [HOW_IT_WORKS.md](HOW_IT_WORKS.md). The quickest
-win is the wording of the prompts in `easy_exam/prompts.py`. Keep the `{placeholders}`, and
+win is the wording of the prompts in `sgpt/prompts.py`. Keep the `{placeholders}`, and
 write literal braces as `{{ }}`.

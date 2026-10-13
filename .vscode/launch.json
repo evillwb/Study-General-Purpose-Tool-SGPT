@@ -2,27 +2,27 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Easy Exam app",
+      "name": "SGPT app",
       "type": "debugpy",
       "request": "launch",
-      "module": "easy_exam.app",
+      "module": "sgpt.app",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     },
     {
-      "name": "Easy Exam command line (topic search)",
+      "name": "SGPT command line (topic search)",
       "type": "debugpy",
       "request": "launch",
-      "module": "easy_exam",
+      "module": "sgpt",
       "args": ["--topic", "Photosynthesis", "--subject", "Biology", "--level", "GCSE", "--plan", "mcq:5,short:3"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     },
     {
-      "name": "Easy Exam command line (match past papers in library/)",
+      "name": "SGPT command line (match past papers in library/)",
       "type": "debugpy",
       "request": "launch",
-      "module": "easy_exam",
+      "module": "sgpt",
       "args": ["library", "--structure", "match"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"

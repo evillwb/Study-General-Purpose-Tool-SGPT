@@ -49,7 +49,7 @@ _PAGE_NUMBER = re.compile(
 
 
 MIN_PAGE_CHARS = 25  # a page with less selectable text than this is treated as a scan
-CACHE_DIR = ".easy-exam-cache"
+CACHE_DIR = ".sgpt-cache"
 
 
 def _cache_file(path: Path) -> Path:

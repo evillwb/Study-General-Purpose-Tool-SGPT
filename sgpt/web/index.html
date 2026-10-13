@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Easy Exam</title>
+  <title>SGPT · Study General Purpose Tool</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f46e5'/><path d='M10 16.5l4 4 8-9' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
   <link rel="stylesheet" href="/static/app.css">
 </head>
@@ -13,12 +13,13 @@
       <span class="logo" aria-hidden="true">
         <svg viewBox="0 0 32 32"><path d="M10 16.5l4 4 8-9"/></svg>
       </span>
-      <strong>Easy Exam</strong>
+      <span class="brand-text"><strong>SGPT</strong><small>Study General Purpose Tool</small></span>
     </div>
     <nav class="nav" aria-label="Main">
       <button class="nav-link active" data-view="create" type="button">Create</button>
       <button class="nav-link" data-view="library" type="button">My exams <span id="exam-count" class="count"></span></button>
       <button class="nav-link" data-view="ocr" type="button">OCR</button>
+      <button class="nav-link" data-view="convert" type="button">Convert</button>
     </nav>
     <div class="top-actions">
       <button id="status" class="status" type="button" title="AI settings">
@@ -109,6 +110,8 @@
           <input id="challenge" type="range" min="-2" max="2" step="1" value="0" list="challenge-ticks">
           <span class="ticks"><span>Much easier</span><span>Normal</span><span>Much harder</span></span>
         </label>
+        <label class="check strong"><input id="verify" type="checkbox" checked>
+          <span><b>Double-check every answer</b><small>The AI re-solves each question to catch mistakes. Slower, more accurate.</small></span></label>
         <details class="more">
           <summary>More options</summary>
           <label class="field">Instructions for the AI
@@ -134,7 +137,7 @@
       <div id="empty" class="empty">
         <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div>
         <h1>Make a practice exam in minutes</h1>
-        <p class="lead">Add your past papers or notes, paste a link, or just type a topic and let Easy Exam search the internet.</p>
+        <p class="lead">Add your past papers or notes, paste a link, or just type a topic and let SGPT search the internet.</p>
         <div class="how">
           <div><b>1</b><span>Choose a topic and sources</span></div>
           <div><b>2</b><span>Pick question types and difficulty</span></div>
@@ -167,12 +170,13 @@
           <div class="actions">
             <div class="menu">
               <button id="export-btn" class="btn" type="button" aria-haspopup="true">Export ▾</button>
-              <div id="export-menu" class="menu-list" hidden>
-                <a data-part="all">Everything (.md)</a>
-                <a data-part="paper">Exam paper (.md)</a>
-                <a data-part="answers">Model answers (.md)</a>
-                <a data-part="scheme">Marking scheme (.md)</a>
-                <button id="copy" type="button">Copy as Markdown</button>
+              <div id="export-menu" class="menu-list export-grid" hidden>
+                <span></span><b>Word</b><b>PDF</b><b>MD</b>
+                <span>Exam paper</span><a data-part="paper" data-format="docx">.docx</a><a data-part="paper" data-format="pdf">.pdf</a><a data-part="paper" data-format="md">.md</a>
+                <span>Model answers</span><a data-part="answers" data-format="docx">.docx</a><a data-part="answers" data-format="pdf">.pdf</a><a data-part="answers" data-format="md">.md</a>
+                <span>Marking scheme</span><a data-part="scheme" data-format="docx">.docx</a><a data-part="scheme" data-format="pdf">.pdf</a><a data-part="scheme" data-format="md">.md</a>
+                <span>Everything</span><a data-part="all" data-format="docx">.docx</a><a data-part="all" data-format="pdf">.pdf</a><a data-part="all" data-format="md">.md</a>
+                <button id="copy" type="button">Copy everything as Markdown</button>
               </div>
             </div>
             <button id="print" class="btn primary" type="button">Print / PDF</button>
@@ -223,6 +227,37 @@
       </div>
     </section>
     <div id="ocr-results" class="ocr-results"></div>
+  </main>
+
+  <!-- ============ CONVERT ============ -->
+  <main id="view-convert" class="ocr-view" hidden>
+    <div class="exams-head">
+      <div>
+        <h1>Convert files</h1>
+        <p class="muted">Word ↔ PDF, images ↔ PDF, Markdown, text and web pages, merge PDFs, or make a scan searchable. Runs on this computer.</p>
+      </div>
+    </div>
+    <section class="panel">
+      <label id="conv-drop" class="dropzone">
+        <input id="conv-input" type="file" multiple hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h7l5 5v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M9 14h6m-2-2 2 2-2 2"/></svg>
+        <strong>Drop files to convert</strong>
+        <span>PDF, Word, images, Markdown, text, HTML<span id="lo-note"></span></span>
+      </label>
+      <ul id="conv-files" class="file-list"></ul>
+      <div class="field-label">Convert to</div>
+      <div id="conv-targets" class="segmented wrap3" role="radiogroup" aria-label="Convert to"></div>
+      <p id="conv-hint" class="hint"></p>
+      <button id="conv-go" class="btn primary big" type="button" disabled>Convert</button>
+      <div id="conv-progress" class="ocr-progress" hidden>
+        <div class="progress-meta"><span id="conv-msg"></span></div>
+        <div class="bar"><div id="conv-fill"></div></div>
+      </div>
+    </section>
+    <section id="conv-results" class="panel" hidden>
+      <h2 class="panel-title">Ready to download</h2>
+      <ul id="conv-list" class="file-list"></ul>
+    </section>
   </main>
 
   <!-- ============ SETTINGS ============ -->
@@ -283,7 +318,7 @@
           </span>
         </label>
       </div>
-      <p class="hint">Keys are stored only on this computer, in <code>~/.easy-exam/config.json</code>.</p>
+      <p class="hint">Keys are stored only on this computer, in <code>~/.sgpt/config.json</code>.</p>
       <div class="settings-foot"><button class="btn primary" value="close">Done</button></div>
     </form>
   </dialog>

@@ -1,7 +1,7 @@
 import io
 import time
 
-from easy_exam.app import create_app
+from sgpt.app import create_app
 
 
 def _wait(client, job_id, timeout=15):

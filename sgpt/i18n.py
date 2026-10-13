@@ -28,7 +28,7 @@ _LABELS = {
         "answer": "Answer", "accept": "Accept / do not accept",
         "no_points": "No marking points generated.",
         "sources": "Sources",
-        "generated": "Generated {date} by Easy Exam{model}. AI-generated: check the answers "
+        "generated": "Generated {date} by SGPT{model}. AI-generated: check the answers "
                      "before relying on them.",
         "with_model": " with `{model}`",
         "true_false": ["True", "False"],
@@ -49,7 +49,7 @@ _LABELS = {
         "answer": "答案", "accept": "可接受／不可接受",
         "no_points": "未生成评分要点。",
         "sources": "资料来源",
-        "generated": "由 Easy Exam 于 {date} 生成{model}。内容由 AI 生成，使用前请核对答案。",
+        "generated": "由 SGPT 于 {date} 生成{model}。内容由 AI 生成，使用前请核对答案。",
         "with_model": "（模型：`{model}`）",
         "true_false": ["对", "错"],
     },
@@ -70,7 +70,7 @@ _LABELS = {
         "answer": "Jawapan", "accept": "Terima / jangan terima",
         "no_points": "Tiada isi pemarkahan dijana.",
         "sources": "Sumber",
-        "generated": "Dijana pada {date} oleh Easy Exam{model}. Dijana oleh AI: semak jawapan "
+        "generated": "Dijana pada {date} oleh SGPT{model}. Dijana oleh AI: semak jawapan "
                      "sebelum digunakan.",
         "with_model": " dengan `{model}`",
         "true_false": ["Betul", "Salah"],

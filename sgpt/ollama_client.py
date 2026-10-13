@@ -83,9 +83,9 @@ class OllamaClient:
 
     def chat(self, system: str, prompt: str, json_mode: bool = False,
              max_tokens: int = 4096, label: str = "",
-             should_stop: Callable[[], bool] | None = None) -> str:
+             should_stop: Callable[[], bool] | None = None, think: bool = False) -> str:
         options = {"temperature": self.temperature, "num_ctx": self.num_ctx,
-                   "num_predict": max_tokens}
+                   "num_predict": max_tokens * 3 if think else max_tokens}
         if self.seed is not None:
             options["seed"] = self.seed
         payload = {
@@ -93,7 +93,8 @@ class OllamaClient:
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}],
             "stream": True,
-            "think": False,  # qwen3: skip the hidden reasoning phase for faster output
+            # qwen3: skip the hidden reasoning phase for speed, except when checking answers
+            "think": think,
             "options": options,
         }
         if json_mode:

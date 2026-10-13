@@ -15,7 +15,7 @@ from pathlib import Path
 from .i18n import LANGUAGES
 from .pdf_extract import ExamPaper, extract_paper, needs_ocr_but_unavailable, split_questions
 
-USER_AGENT = "Mozilla/5.0 (compatible; EasyExam/1.0; +https://github.com/evillwb/Easy-Note-AI---Project)"
+USER_AGENT = "Mozilla/5.0 (compatible; SGPT/1.0; +https://github.com/evillwb/Easy-Note-AI---Project)"
 TEXT_SUFFIXES = {".txt", ".md", ".markdown"}
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 SUPPORTED_SUFFIXES = {".pdf"} | TEXT_SUFFIXES | IMAGE_SUFFIXES

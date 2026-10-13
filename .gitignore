@@ -3,7 +3,7 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
-.easy-exam-cache/
+.sgpt-cache/
 output/*
 !output/.gitkeep
 library/*

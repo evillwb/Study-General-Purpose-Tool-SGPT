@@ -1,4 +1,4 @@
-"""Local web app: python -m easy_exam.app
+"""Local web app: python -m sgpt.app
 
 Runs a small web server on your own computer (http://127.0.0.1:8765) and opens it in your
 browser. The server only listens on this computer. With Ollama nothing leaves your machine;
@@ -15,14 +15,15 @@ import time
 import uuid
 import webbrowser
 from pathlib import Path
+from urllib.parse import quote
 
 import markdown as md
-from flask import Flask, Response, abort, jsonify, request, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 
 from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
-from . import ocr
+from . import convert, ocr
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
 from .providers import (PROVIDERS, SEARCH_ENGINES, make_client, mask_key, resolve_base_url,
@@ -31,6 +32,7 @@ from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_f
                       library_meta, load_file, load_library, save_library_meta)
 
 WEB_DIR = Path(__file__).parent / "web"
+LOCAL_JOBS = {"ocr", "convert"}  # don't use the AI, so they can run alongside an AI job
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()-]+")
 _EXAM_ID = re.compile(r"^[a-f0-9]{6,32}$")
 
@@ -115,10 +117,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
     def running_job(ocr: bool = False) -> Job | None:
         """The running AI job (or OCR job): OCR can run while an exam is being written."""
         return next((j for j in jobs.values()
-                     if j.state == "running" and (j.kind == "ocr") == ocr), None)
+                     if j.state == "running" and (j.kind in LOCAL_JOBS) == ocr), None)
 
     def start_job(job: Job, work) -> Response:
-        if running_job(job.kind == "ocr"):
+        if running_job(job.kind in LOCAL_JOBS):
             abort(409, "Something is already running. Wait for it or stop it first.")
         jobs[job.id] = job
 
@@ -154,6 +156,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         engine, key = search_settings()
         return jsonify(
             ocr=ocr.available(),
+            convert={"targets": convert.TARGETS, "libreoffice": bool(convert.libreoffice()),
+                     "inputs": sorted(convert.INPUTS)},
             question_types=[{"id": k, "label": v["label"], "marks": v["marks"]}
                             for k, v in QUESTION_TYPES.items()],
             default_plan=DEFAULT_PLAN,
@@ -346,6 +350,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             difficulty=s.get("difficulty") if s.get("difficulty") in DIFFICULTY_TEXT else "mixed",
             difficulty_mix=s.get("difficulty_mix") if isinstance(s.get("difficulty_mix"), dict) else None,
             challenge=max(-2, min(2, int(s.get("challenge") or 0))),
+            verify=s.get("verify") is not False,
             instructions=(s.get("instructions") or "").strip(),
             duration_minutes=int(s["minutes"]) if str(s.get("minutes") or "").strip() else None,
             seed=seed,
@@ -384,6 +389,84 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
     def current_job():
         job = running_job()
         return jsonify(job.as_dict() if job else None)
+
+    # --- Downloads and the file converter --------------------------------------------
+    def download(markdown_text: str, fmt: str, title: str, suffix: str = "") -> Response:
+        if fmt not in ("md", "txt", "html", "pdf", "docx"):
+            abort(400, "Unknown format")
+        data, mimetype = convert.export_markdown(markdown_text, fmt, title)
+        slug = re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" ._")[:60] or "export"
+        return Response(data, mimetype=mimetype, headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(slug + suffix)}.{fmt}"})
+
+    @app.post("/api/export")
+    def export_text():
+        data = request.get_json(force=True) or {}
+        return download(str(data.get("markdown") or ""), str(data.get("format") or "md"),
+                        str(data.get("title") or "export"))
+
+    converted_dir = output_dir / "converted"
+
+    @app.post("/api/convert")
+    def convert_files():
+        target = request.form.get("target", "pdf")
+        if target not in (*convert.TARGETS, "merged-pdf", "searchable-pdf"):
+            abort(400, "Unknown target format")
+        uploads = request.files.getlist("files")
+        if not uploads:
+            abort(400, "Choose some files")
+        job = Job("convert")
+        work_dir = converted_dir / job.id
+        in_dir = work_dir / "in"
+        in_dir.mkdir(parents=True)
+        files = []
+        for f in uploads:
+            name = _SAFE_NAME.sub("_", Path(f.filename or "file").name).strip(" .") or "file"
+            if Path(name).suffix.lower() not in convert.INPUTS:
+                abort(400, f"{name}: this file type can't be converted")
+            f.save(in_dir / name)
+            files.append(in_dir / name)
+
+        def work(job: Job):
+            out_dir = work_dir / "out"
+            out_dir.mkdir()
+            results = []
+            if target == "merged-pdf":
+                job.step(0, 1, f"Merging {len(files)} files")
+                results.append(convert.merge_pdfs(files, out_dir / "merged.pdf", work_dir))
+            else:
+                for i, src in enumerate(files):
+                    if job.cancelled():
+                        raise Cancelled()
+                    job.step(i, len(files), f"Converting {src.name}")
+                    try:
+                        if target == "searchable-pdf":
+                            results.append(convert.searchable_pdf(
+                                src, out_dir / f"{src.stem} (searchable).pdf",
+                                should_stop=job.cancelled,
+                                step=lambda n, total, name=src.name: job.note(
+                                    f"{name}: OCR page {n} of {total}")))
+                        else:
+                            results.append(convert.convert(src, target, out_dir))
+                    except convert.ConvertError as exc:
+                        job.warn(str(exc))
+            job.result = [{"name": r.name, "size": r.stat().st_size,
+                           "url": f"/api/converted/{job.id}/{quote(r.name)}"} for r in results]
+            job.step(1, 1, "Done")
+            if not results:
+                raise RuntimeError("Nothing could be converted. " + " ".join(
+                    m[2:] for m in job.log if m.startswith("⚠")))
+
+        return start_job(job, work)
+
+    @app.get("/api/converted/<job_id>/<path:name>")
+    def converted_file(job_id, name):
+        if not re.match(r"^[a-f0-9]{12}$", job_id):
+            abort(404, "Not found")
+        path = converted_dir / job_id / "out" / Path(name).name
+        if not path.is_file():
+            abort(404, "Not found")
+        return send_file(path, as_attachment=True, download_name=path.name)
 
     # --- OCR only ------------------------------------------------------------------------
     @app.post("/api/ocr")
@@ -493,13 +576,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
     def export_exam(exam_id):
         exam = load_exam(exam_id)
         part = request.args.get("part", "all")
+        fmt = request.args.get("format", "md")
         if part not in ("all", "paper", "answers", "scheme"):
             abort(400, "Unknown part")
         suffix = {"all": "", "paper": "_paper", "answers": "_answers", "scheme": "_marking_scheme"}
-        slug = re.sub(r"[^A-Za-z0-9]+", "_", exam["title"]).strip("_")[:50] or "exam"
-        return Response(render_markdown(exam, part), mimetype="text/markdown",
-                        headers={"Content-Disposition":
-                                 f'attachment; filename="{slug}{suffix[part]}.md"'})
+        return download(render_markdown(exam, part), fmt, exam["title"], suffix[part])
 
     @app.delete("/api/exams/<exam_id>")
     def delete_exam(exam_id):
@@ -514,7 +595,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(prog="easy_exam.app", description="Easy Exam web app")
+    p = argparse.ArgumentParser(prog="sgpt.app", description="SGPT web app")
     p.add_argument("--port", type=int, default=8765)
     p.add_argument("--library", default="library", help="folder for your source files")
     p.add_argument("--output", default="output", help="folder for generated exams")
@@ -524,7 +605,7 @@ def main(argv: list[str] | None = None) -> int:
 
     app = create_app(Path(args.library), Path(args.output), args.host)
     url = f"http://127.0.0.1:{args.port}"
-    print(f"Easy Exam is running at {url}  (press Ctrl+C to quit)")
+    print(f"SGPT is running at {url}  (press Ctrl+C to quit)")
     if not args.no_browser:
         threading.Timer(1.0, webbrowser.open, [url]).start()
     app.run(host="127.0.0.1", port=args.port, threaded=True)

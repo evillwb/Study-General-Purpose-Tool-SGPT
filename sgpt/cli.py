@@ -1,4 +1,4 @@
-"""Command-line entry point: python -m easy_exam [options]"""
+"""Command-line entry point: python -m sgpt [options]"""
 
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ def parse_plan(text: str) -> list[dict]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="easy_exam",
+        prog="sgpt",
         description="Generate a practice exam with model answers and a marking scheme from your "
                     "sources (past papers, notes, links) or from an internet search.")
     p.add_argument("input", nargs="?", default="library",
@@ -67,6 +67,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--mix", help="custom difficulty mix as easy,medium,hard percentages, e.g. 20,50,30")
     p.add_argument("--challenge", type=int, choices=range(-2, 3), default=0, metavar="{-2..2}",
                    help="fine-tune: -2 much easier … 2 much harder (default 0)")
+    p.add_argument("--no-verify", action="store_true",
+                   help="skip the double-check of every answer (faster, less accurate)")
     p.add_argument("--instructions", default="", help="extra instructions for the question writer")
     p.add_argument("--minutes", type=int, help="time allowed (default: estimated from marks)")
     p.add_argument("-p", "--provider", default="ollama", choices=list(PROVIDERS),
@@ -118,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
                           structure=structure, difficulty=args.difficulty,
                           instructions=args.instructions, duration_minutes=args.minutes,
                           max_chars=args.max_chars, seed=args.seed, language=args.language,
-                          challenge=args.challenge,
+                          challenge=args.challenge, verify=not args.no_verify,
                           difficulty_mix=dict(zip(("easy", "medium", "hard"),
                                                   (float(x) for x in args.mix.split(","))))
                           if args.mix else None,

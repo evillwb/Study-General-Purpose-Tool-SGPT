@@ -52,8 +52,8 @@ const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const letter = (i) => String.fromCharCode(65 + i);
 
 const store = {
-  get(key, fallback) { try { return JSON.parse(localStorage.getItem("easy-exam:" + key)) ?? fallback; } catch { return fallback; } },
-  set(key, value) { try { localStorage.setItem("easy-exam:" + key, JSON.stringify(value)); } catch {} },
+  get(key, fallback) { try { return JSON.parse(localStorage.getItem("sgpt:" + key)) ?? fallback; } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem("sgpt:" + key, JSON.stringify(value)); } catch {} },
 };
 
 // ---------- AI settings ----------------------------------------------------------
@@ -203,6 +203,7 @@ function saveBuilder() {
   data.structure = $("input[name=structure]:checked").value;
   data.difficulty = $("input[name=difficulty]:checked").value;
   data.plan = state.plan;
+  data.verify = $("#verify").checked;
   data.mix = state.mix;
   store.set("builder", data);
 }
@@ -215,6 +216,7 @@ function loadBuilder() {
     if (input) input.checked = true;
   }
   if (data.mix) state.mix = data.mix;
+  if (data.verify === false) $("#verify").checked = false;
   state.plan = {};
   const defaults = Object.fromEntries(state.meta.default_plan.map((p) => [p.type, p]));
   for (const t of state.meta.question_types) {
@@ -470,6 +472,7 @@ async function startGeneration() {
     structure: $("input[name=structure]:checked").value, plan,
     difficulty: $("input[name=difficulty]:checked").value,
     difficulty_mix: currentMix(), challenge: Number($("#challenge").value),
+    verify: $("#verify").checked,
     instructions: $("#instructions").value, minutes: $("#minutes").value,
   };
   try { followJob(await api("/api/generate", { json: payload })); }
@@ -557,7 +560,7 @@ function renderExam() {
     `${x.duration_minutes} min`, x.difficulty && `${x.difficulty[0].toUpperCase()}${x.difficulty.slice(1)} difficulty`,
     language && language.id !== "en" && language.label, x.model && `AI: ${x.model}`].filter(Boolean);
   $("#exam-chips").replaceChildren(...chips.map((c) => el("span", { class: "chip" }, c)));
-  $$("#export-menu a").forEach((a) => (a.href = `/api/exams/${x.id}/export?part=${a.dataset.part}`));
+  $$("#export-menu a").forEach((a) => (a.href = `/api/exams/${x.id}/export?part=${a.dataset.part}&format=${a.dataset.format}`));
   $$(".result .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === state.tab));
 
   const isCards = state.tab === "questions";
@@ -609,6 +612,8 @@ function questionCard(q) {
       el("span", { class: "tag" }, typeLabel(q.type)),
       el("span", { class: `tag ${q.difficulty}` }, q.difficulty),
       q.topic && el("span", { class: "tag" }, q.topic),
+      q.check && el("span", { class: `tag ${q.check}`, title: q.check_note || "" },
+        { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
       el("span", { class: "qmarks" }, plural(q.marks, "mark"))),
     el("div", { class: "qtext", html: fmt(q.question) }),
     q.options.length > 0 && el("ul", { class: "options" }, q.options.map((o, i) =>
@@ -629,6 +634,8 @@ function questionCard(q) {
 
 function answerBlock(q) {
   return el("div", { class: "answer" },
+    q.check_note && q.check !== "verified" && el("div", { class: "check-note", html:
+      `<b>${q.check === "flagged" ? "The double-check found a problem" : "Corrected by the double-check"}:</b> ${fmt(q.check_note)}` }),
     q.final_answer && el("div", { class: "final", html: `<b>Answer:</b> ${fmt(q.final_answer)}` }),
     el("h4", {}, "Model answer"),
     el("div", { html: fmt(q.answer || "No answer was generated. Try ↻ Regenerate.") }),
@@ -710,19 +717,20 @@ function showView(view) {
   $("#view-create").hidden = view !== "create";
   $("#view-library").hidden = view !== "library";
   $("#view-ocr").hidden = view !== "ocr";
+  $("#view-convert").hidden = view !== "convert";
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "library") loadExams();
 }
 
 // ---------- OCR only -------------------------------------------------------------------
-const ocrState = { jobId: null, timer: null, results: [] };
+const ocrState = { jobId: null, timer: null, results: [], files: {} };
 
 async function startOcr(files) {
   const ok = [...files].filter((f) => /\.(pdf|png|jpe?g|webp|bmp|tiff?)$/i.test(f.name));
   if (!ok.length) return toast("Use PDF or image files.");
   if (ocrState.jobId) return toast("Please wait for the current OCR to finish.");
   const form = new FormData();
-  ok.forEach((f) => form.append("files", f));
+  ok.forEach((f) => { form.append("files", f); ocrState.files[f.name] = f; });
   form.append("force", $("#ocr-force").checked ? "true" : "false");
   try {
     const job = await api("/api/ocr", { method: "POST", body: form });
@@ -756,6 +764,101 @@ function ocrText(file, withHeadings = file.pages.length > 1) {
   return file.pages.map((p) => (withHeadings ? `--- Page ${p.page} ---\n` : "") + p.text.trim()).join("\n\n") + "\n";
 }
 
+function ocrMarkdown(file) {
+  // Two trailing spaces keep the scan's line breaks in Word/PDF.
+  const body = (p) => p.text.trim().split("\n").map((l) => l.trimEnd()).join("  \n");
+  return file.pages.length === 1 ? body(file.pages[0]) + "\n"
+    : file.pages.map((p) => `## Page ${p.page}\n\n${body(p)}`).join("\n\n") + "\n";
+}
+
+async function exportText(markdown, format, title) {
+  try {
+    const res = await fetch("/api/export", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ markdown, format, title }) });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Export failed");
+    const url = URL.createObjectURL(await res.blob());
+    el("a", { href: url, download: `${title}.${format}` }).click();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  } catch (e) { toast(e.message); }
+}
+
+// ---------- Convert --------------------------------------------------------------------
+const convState = { files: [], target: "pdf", jobId: null, timer: null };
+const CONV_TARGETS = [["pdf", "PDF"], ["docx", "Word"], ["txt", "Text"], ["md", "Markdown"], ["html", "Web page"],
+  ["png", "Images"], ["merged-pdf", "Merge into one PDF"], ["searchable-pdf", "Searchable PDF (OCR)"]];
+
+function ext(name) { return (name.match(/\.[^.]+$/) || [""])[0].toLowerCase(); }
+
+function renderConvert() {
+  const info = state.meta.convert;
+  $("#lo-note").textContent = info.libreoffice ? " · Office files via LibreOffice" : "";
+  $("#conv-targets").replaceChildren(...CONV_TARGETS.map(([id, label]) => el("label", {},
+    el("input", { type: "radio", name: "conv-target", value: id, checked: convState.target === id,
+      onchange: () => { convState.target = id; renderConvert(); } }),
+    el("span", {}, label))));
+  $("#conv-files").replaceChildren(...convState.files.map((f, i) => el("li", {},
+    el("span", { class: `file-icon ${ext(f.name).slice(1)}` }, ext(f.name).slice(1, 5)),
+    el("div", { class: "item-main" }, el("div", { class: "item-name" }, f.name),
+      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(f.size / 1024))} KB`)),
+    el("span"),
+    el("button", { class: "icon-btn", type: "button", "aria-label": `Remove ${f.name}`,
+      onclick: () => { convState.files.splice(i, 1); renderConvert(); } }, "✕"))));
+  const bad = convState.files.filter((f) => !info.inputs.includes(ext(f.name)));
+  const office = convState.files.filter((f) => [".doc", ".rtf", ".odt", ".pptx", ".ppt", ".odp", ".xlsx", ".xls", ".ods"].includes(ext(f.name)));
+  let hint = "";
+  if (bad.length) hint = `Can't convert: ${bad.map((f) => f.name).join(", ")}`;
+  else if (office.length && !info.libreoffice) hint = "Old Word, PowerPoint and Excel files need LibreOffice (free) installed: libreoffice.org";
+  else if (convState.target === "docx" && convState.files.some((f) => ext(f.name) === ".pdf")) hint = "PDF → Word keeps the layout when the PDF has real text; scans are read with OCR.";
+  else if (convState.target === "searchable-pdf") hint = "Adds an invisible text layer to scanned PDFs and photos so you can search, select and copy the text.";
+  else if (convState.target === "png") hint = "One PNG per page; several pages are saved together as a .zip.";
+  $("#conv-hint").textContent = hint;
+  $("#conv-go").disabled = !convState.files.length || bad.length > 0 || Boolean(convState.jobId);
+}
+
+async function runConvert(files, target) {
+  if (convState.jobId) return toast("Please wait for the current conversion to finish.");
+  const form = new FormData();
+  files.forEach((f) => form.append("files", f));
+  form.append("target", target);
+  if (target === "searchable-pdf" && $("#view-convert").hidden) toast("Making a searchable PDF… it will download when ready.");
+  try {
+    const job = await api("/api/convert", { method: "POST", body: form });
+    convState.jobId = job.id;
+    convState.autoDownload = !$("#view-ocr").hidden;
+    $("#conv-progress").hidden = false;
+    renderConvert();
+    clearInterval(convState.timer);
+    convState.timer = setInterval(async () => {
+      try { renderConvertJob(await api(`/api/jobs/${convState.jobId}`)); } catch { /* retry */ }
+    }, 700);
+  } catch (e) { toast(e.message); }
+}
+
+function renderConvertJob(job) {
+  $("#conv-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#conv-fill").style.width = `${Math.max(3, Math.round(((job.done + (job.state === "done" ? 1 : 0)) / Math.max(job.total, 1)) * 100))}%`;
+  if (job.state === "running") return;
+  clearInterval(convState.timer);
+  convState.jobId = null;
+  $("#conv-progress").hidden = true;
+  renderConvert();
+  if (job.state === "error") return toast(job.error);
+  const results = job.result || [];
+  job.log.filter((m) => m.startsWith("⚠")).forEach((m) => toast(m.slice(2)));
+  if (convState.autoDownload) {
+    results.forEach((r) => el("a", { href: r.url, download: r.name }).click());
+    return;
+  }
+  $("#conv-results").hidden = false;
+  $("#conv-list").prepend(...results.map((r) => el("li", {},
+    el("span", { class: `file-icon ${ext(r.name).slice(1)}` }, ext(r.name).slice(1, 5)),
+    el("div", { class: "item-main" }, el("div", { class: "item-name" }, r.name),
+      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(r.size / 1024))} KB`)),
+    el("span"),
+    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Download"))));
+  toast(`Converted ${plural(results.length, "file")}.`);
+}
+
 function download(name, text, type) {
   const url = URL.createObjectURL(new Blob([text], { type }));
   el("a", { href: url, download: name }).click();
@@ -775,9 +878,11 @@ function renderOcrResults() {
           el("button", { class: "btn small", type: "button", onclick: async () => {
             try { await navigator.clipboard.writeText(ocrText(file)); toast("Copied."); } catch { toast("Copy failed. Use a download instead."); }
           } }, "Copy"),
-          el("button", { class: "btn small", type: "button", onclick: () => download(`${base}.txt`, ocrText(file), "text/plain") }, ".txt"),
-          el("button", { class: "btn small", type: "button", onclick: () => download(`${base}.md`,
-            `# ${file.name}\n\n` + file.pages.map((p) => `## Page ${p.page}\n\n${p.text.trim()}`).join("\n\n") + "\n", "text/markdown") }, ".md"),
+          ...["docx", "pdf", "txt", "md"].map((fmt) => el("button", { class: "btn small", type: "button",
+            onclick: () => exportText(ocrMarkdown(file), fmt, base) }, `.${fmt}`)),
+          ocrState.files[file.name] && el("button", { class: "btn small", type: "button",
+            title: "The original scan with a hidden text layer, so you can search and copy it",
+            onclick: () => runConvert([ocrState.files[file.name]], "searchable-pdf") }, "Searchable PDF"),
           el("button", { class: "btn small primary", type: "button", title: "Add this text to your exam sources", onclick: async () => {
             const form = new FormData();
             form.append("files", new File([ocrText(file)], `${base} (OCR).txt`, { type: "text/plain" }));
@@ -826,6 +931,14 @@ function wire() {
   ocrDrop.addEventListener("drop", (e) => startOcr(e.dataTransfer.files));
   $("#ocr-cancel").addEventListener("click", () => ocrState.jobId && api(`/api/jobs/${ocrState.jobId}/cancel`, { method: "POST" }).catch(() => {}));
 
+  const convDrop = $("#conv-drop");
+  const addConvFiles = (files) => { convState.files.push(...files); renderConvert(); };
+  $("#conv-input").addEventListener("change", (e) => { addConvFiles([...e.target.files]); e.target.value = ""; });
+  ["dragenter", "dragover"].forEach((ev) => convDrop.addEventListener(ev, (e) => { e.preventDefault(); convDrop.classList.add("drag"); }));
+  ["dragleave", "drop"].forEach((ev) => convDrop.addEventListener(ev, (e) => { e.preventDefault(); convDrop.classList.remove("drag"); }));
+  convDrop.addEventListener("drop", (e) => addConvFiles([...e.dataTransfer.files]));
+  $("#conv-go").addEventListener("click", () => runConvert(convState.files, convState.target));
+
   $("#generate").addEventListener("click", startGeneration);
   $("#cancel").addEventListener("click", async () => {
     if (!state.jobId) return;
@@ -861,7 +974,7 @@ function wire() {
 
 async function init() {
   try { state.meta = await api("/api/meta"); }
-  catch { document.body.prepend(el("p", { class: "note warn" }, "Could not reach the Easy Exam server. Is it still running?")); return; }
+  catch { document.body.prepend(el("p", { class: "note warn" }, "Could not reach the SGPT server. Is it still running?")); return; }
   $("#provider").replaceChildren(...state.meta.providers.map((p) => el("option", { value: p.id }, p.label)));
   $("#language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
   $("#source_language").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
@@ -873,6 +986,7 @@ async function init() {
   renderSettings();
   renderPlan();
   renderDifficulty();
+  renderConvert();
   await Promise.all([loadLibrary(), loadExams(), checkStatus()]);
   api("/api/jobs/current").then((job) => job && followJob(job)).catch(() => {});
 }

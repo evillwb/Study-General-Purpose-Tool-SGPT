@@ -1,4 +1,4 @@
-# Easy Exam
+# SGPT
 
 Make a **practice exam paper** with a **model answer paper** and a **step-by-step marking
 scheme** in a few minutes. Give it your past papers, notes, links or pasted text, or just
@@ -28,8 +28,8 @@ type a topic and let it search the internet.
    ```
 2. Get this project (`git clone` or **Code → Download ZIP** on GitHub).
 3. Start the app:
-   - **Windows:** double-click `start-easy-exam.bat`
-   - **macOS / Linux:** double-click `start-easy-exam.command` (or run it in a terminal)
+   - **Windows:** double-click `start-sgpt.bat`
+   - **macOS / Linux:** double-click `start-sgpt.command` (or run it in a terminal)
 
    The first run installs everything into a `.venv` folder. After that, the app opens in
    your browser at <http://127.0.0.1:8765>.
@@ -42,12 +42,12 @@ choose a provider and paste your API key.
 The same generator also runs from the terminal:
 
 ```bash
-python -m easy_exam --topic "Photosynthesis" --level GCSE --plan "mcq:10,short:4,essay:1:12"
-python -m easy_exam library --structure match              # copy the layout of the PDFs in library/
-python -m easy_exam --url https://en.wikipedia.org/wiki/Cell_cycle --topic "Cell cycle"
-python -m easy_exam --topic "Persamaan kuadratik" --language ms
-python -m easy_exam --topic "Gravity" -p anthropic          # uses ANTHROPIC_API_KEY
-python -m easy_exam --help
+python -m sgpt --topic "Photosynthesis" --level GCSE --plan "mcq:10,short:4,essay:1:12"
+python -m sgpt library --structure match              # copy the layout of the PDFs in library/
+python -m sgpt --url https://en.wikipedia.org/wiki/Cell_cycle --topic "Cell cycle"
+python -m sgpt --topic "Persamaan kuadratik" --language ms
+python -m sgpt --topic "Gravity" -p anthropic          # uses ANTHROPIC_API_KEY
+python -m sgpt --help
 ```
 
 Each run saves `output/<date>_<title>.md` (paper, model answers and marking scheme) and a

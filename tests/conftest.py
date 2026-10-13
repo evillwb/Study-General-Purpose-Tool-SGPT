@@ -19,8 +19,8 @@ SAMPLE_PAGES = [
 
 @pytest.fixture(autouse=True)
 def isolated_config(tmp_path, monkeypatch):
-    """Never read or write the real ~/.easy-exam config or API keys during tests."""
-    monkeypatch.setenv("EASY_EXAM_CONFIG", str(tmp_path / "config.json"))
+    """Never read or write the real ~/.sgpt config or API keys during tests."""
+    monkeypatch.setenv("SGPT_CONFIG", str(tmp_path / "config.json"))
     for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GROQ_API_KEY",
                 "OPENROUTER_API_KEY", "DEEPSEEK_API_KEY", "CUSTOM_API_KEY", "OLLAMA_HOST",
                 "BRAVE_API_KEY", "TAVILY_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
@@ -59,6 +59,19 @@ def fake_reply(system: str, prompt: str) -> str:
              "marks": 1 if mcq else 3, "question": f"Solve 2x + {i} = 9 for x.",
              "options": ["A. 1", "B) 2", "3.5", "4"] if mcq else [], "parts": []}
             for i in range(1, count + 1)]})
+    if "independent senior examiner" in system:
+        items = re.findall(r"^Question (\d+) \[.*?\n(.*)$", prompt, re.MULTILINE)
+        checks = []
+        for n, text in items:
+            entry = {"number": int(n), "question_ok": True, "answer_ok": True, "problem": ""}
+            if "2x + 3" in text:
+                entry.update(question_ok=False, problem="two options are correct")
+            elif "2x + 2" in text:
+                entry.update(answer_ok=False, problem="arithmetic slip", answer="2x = 7, so x = 3.5",
+                             final_answer="x = 3.5",
+                             marking_points=[{"point": "x = 3.5", "marks": 3}])
+            checks.append(entry)
+        return json.dumps({"checks": checks})
     if "senior examiner" in system:
         numbers = [int(n) for n in re.findall(r"^Question (\d+) \[", prompt, re.MULTILINE)]
         return json.dumps({"solutions": [

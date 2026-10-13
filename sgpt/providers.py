@@ -52,7 +52,7 @@ PROVIDERS: dict[str, ProviderInfo] = {p.id: p for p in [
 # --- Saved settings (API keys live only on this computer) ----------------------
 
 def config_path() -> Path:
-    return Path(os.environ.get("EASY_EXAM_CONFIG", Path.home() / ".easy-exam" / "config.json"))
+    return Path(os.environ.get("SGPT_CONFIG", Path.home() / ".sgpt" / "config.json"))
 
 
 def load_config() -> dict:
@@ -186,7 +186,8 @@ class OpenAICompatClient:
         self.list_models()  # confirms the key and URL work; model errors surface on first call
 
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
-             label: str = "", should_stop: Callable[[], bool] | None = None) -> str:
+             label: str = "", should_stop: Callable[[], bool] | None = None,
+             think: bool = False) -> str:
         self._require_key()
         payload = {
             "model": self.model,
@@ -306,7 +307,8 @@ class AnthropicClient:
         self.list_models()
 
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
-             label: str = "", should_stop: Callable[[], bool] | None = None) -> str:
+             label: str = "", should_stop: Callable[[], bool] | None = None,
+             think: bool = False) -> str:
         client = self._sdk()
         if json_mode:
             system += "\nRespond with a single JSON object and nothing else."

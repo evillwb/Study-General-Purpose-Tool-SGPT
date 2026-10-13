@@ -75,6 +75,14 @@ def tidy(text: str) -> str:
     return re.sub(r"(?m)^(\s*\d{1,2}) ([.)．、])", r"\1\2", text)
 
 
+def ocr_boxes(data: bytes) -> list[tuple[list, str]]:
+    """OCR an image and return [(box corner points in pixels, text), ...] (RapidOCR only)."""
+    result = _rapidocr()(data)
+    if result is None or result.boxes is None or result.txts is None:
+        return []
+    return [(box, text) for box, text in zip(result.boxes.tolist(), result.txts) if text.strip()]
+
+
 def ocr_image(data: bytes) -> str:
     """OCR a PNG/JPEG image given as bytes."""
     engine = available()
@@ -136,12 +144,12 @@ def ocr_document(name: str, data: bytes, *, force: bool = False, step=None,
 
 
 def main(argv: list[str] | None = None) -> int:
-    """python -m easy_exam.ocr scan.pdf photo.jpg [-o result.txt] [--force]"""
+    """python -m sgpt.ocr scan.pdf photo.jpg [-o result.txt] [--force]"""
     import argparse
     import sys
     from pathlib import Path
 
-    p = argparse.ArgumentParser(prog="easy_exam.ocr",
+    p = argparse.ArgumentParser(prog="sgpt.ocr",
                                 description="Extract text from scanned PDFs and photos (offline OCR).")
     p.add_argument("files", nargs="+", help="PDF or image files")
     p.add_argument("-o", "--output", help="save the text to this file (default: print it)")

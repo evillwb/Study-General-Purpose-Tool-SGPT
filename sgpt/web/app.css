@@ -63,6 +63,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
   position: sticky; top: 0; z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 17px; }
+.brand-text { display: flex; flex-direction: column; line-height: 1.1; }
+.brand-text small { font-size: 11px; color: var(--muted); font-weight: 500; }
 .logo {
   width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center;
   background: linear-gradient(135deg, var(--accent), var(--accent-2)); color: #fff;
@@ -410,7 +412,15 @@ details.more[open] summary { margin-bottom: 2px; }
 .ocr-view .exams-head { margin-bottom: 0; }
 .ocr-view .exams-head p { margin: 4px 0 0; }
 .check { display: flex; gap: 8px; align-items: center; font-size: 14px; color: var(--muted); cursor: pointer; }
-.check input { accent-color: var(--accent); width: 16px; height: 16px; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; flex: none; }
+.check.strong { align-items: flex-start; color: var(--text); }
+.check.strong input { margin-top: 3px; }
+.check.strong b { display: block; font-size: 14px; }
+.check.strong small { color: var(--muted); font-size: 12px; }
+.tag.verified { color: var(--ok); background: var(--ok-soft); border-color: transparent; }
+.tag.corrected { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.tag.flagged { color: var(--warn); background: var(--warn-soft); border-color: transparent; }
+.check-note { font-size: 13px; padding: 8px 12px; border-radius: 8px; background: var(--warn-soft); }
 .ocr-progress .bar { margin: 8px 0 0; }
 .ocr-progress .progress-meta { align-items: center; }
 #ocr-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .3s; }
@@ -423,6 +433,14 @@ details.more[open] summary { margin-bottom: 2px; }
 .ocr-page:last-child { border-bottom: 0; }
 .ocr-page-head { display: flex; gap: 8px; align-items: center; font-size: 13px; font-weight: 700; color: var(--muted); }
 .ocr-page textarea { font: 14px/1.6 ui-monospace, Menlo, Consolas, "Noto Sans Mono CJK SC", monospace; min-height: 120px; }
+
+.export-grid { display: grid !important; grid-template-columns: auto repeat(3, auto); gap: 2px 4px; align-items: center; min-width: 300px; }
+.export-grid b { font-size: 11px; color: var(--muted); text-align: center; }
+.export-grid span { font-size: 13px; padding: 0 8px; }
+.export-grid a { text-align: center !important; padding: 6px 8px !important; font-size: 13px !important; }
+.export-grid button { grid-column: 1 / -1; margin-top: 4px; border-top: 1px solid var(--border) !important; border-radius: 0 0 8px 8px !important; }
+#conv-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .3s; }
+.conv-file-actions { display: flex; gap: 6px; }
 
 /* ---------- Settings dialog ---------- */
 .settings { border: 0; border-radius: 18px; padding: 0; width: min(520px, calc(100vw - 32px)); background: var(--surface); color: var(--text); box-shadow: 0 20px 60px rgb(0 0 0 / .3); }
@@ -451,7 +469,7 @@ output { font-weight: 400; color: var(--text); }
 }
 @media (max-width: 640px) {
   .topbar { padding: 10px 16px; gap: 10px; flex-wrap: wrap; }
-  .brand strong { display: none; }
+  .brand-text { display: none; }
   .status { max-width: 150px; }
   .how { grid-template-columns: 1fr; }
   .sheet { padding: 28px 18px; }

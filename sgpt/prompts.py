@@ -135,3 +135,37 @@ Reply with JSON in exactly this shape, one entry per question, in the same order
   ]
 }}
 The marks in "marking_points" must add up exactly to the question's marks."""
+
+# --- Double-checking ----------------------------------------------------------------
+
+CHECK_SYSTEM = (
+    "You are an independent senior examiner checking someone else's exam questions and "
+    "answers. For each question, first solve it yourself from scratch WITHOUT looking at the "
+    "proposed answer, then compare. Be strict: arithmetic, units, facts, the correct option, "
+    "and whether the marks add up. Reply with JSON only. " + PLAIN_MATHS
+)
+
+CHECK_PROMPT = """Check these {level} {subject} questions and their proposed answers.
+{notes}
+{items}
+
+For each question decide:
+- "question_ok": false if the question is wrong, ambiguous, unanswerable, or (for multiple
+  choice) has no correct option or more than one correct option.
+- "answer_ok": false if the proposed answer, final answer or marking points are wrong or
+  incomplete.
+
+Reply with JSON in exactly this shape, one entry per question, in the same order:
+{{
+  "checks": [
+    {{
+      "number": 1,
+      "question_ok": true,
+      "answer_ok": true,
+      "problem": "what is wrong, or empty",
+      "answer": "corrected full model answer (only if answer_ok is false)",
+      "final_answer": "corrected final answer (only if answer_ok is false)",
+      "marking_points": [{{"point": "...", "marks": 1}}]
+    }}
+  ]
+}}"""

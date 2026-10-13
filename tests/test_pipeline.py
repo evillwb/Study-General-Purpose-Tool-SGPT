@@ -4,12 +4,12 @@ from pathlib import Path
 import pymupdf
 import pytest
 
-from easy_exam import sources
-from easy_exam.cli import main, parse_plan
-from easy_exam.generator import render_markdown
-from easy_exam.ollama_client import parse_json, strip_thinking
-from easy_exam.pdf_extract import extract_paper, split_questions
-from easy_exam.providers import OpenAICompatClient, make_client, save_provider_config
+from sgpt import sources
+from sgpt.cli import main, parse_plan
+from sgpt.generator import render_markdown
+from sgpt.ollama_client import parse_json, strip_thinking
+from sgpt.pdf_extract import extract_paper, split_questions
+from sgpt.providers import OpenAICompatClient, make_client, save_provider_config
 
 
 def test_extracts_questions_and_marks(sample_pdf):
@@ -61,7 +61,15 @@ def test_cli_matches_past_paper_layout(sample_pdf, fake_ai, tmp_path):
     assert "correct method — **1 mark**" in md and "plan" not in md
     exam = json.loads(out.with_suffix(".json").read_text())
     assert len(exam["questions"]) == 4
-    assert all(r["model"] == "qwen3:4b" and r["think"] is False for r in server.requests)
+    assert all(r["model"] == "qwen3:4b" for r in server.requests)
+    # thinking is only switched on for the double-check
+    for r in server.requests:
+        assert r["think"] is ("independent" in r["messages"][0]["content"])
+    qs = exam["questions"]
+    assert [q["check"] for q in qs] == ["verified", "corrected", "verified", "verified"]
+    assert qs[1]["final_answer"] == "x = 3.5" and qs[1]["marking_points"][0]["marks"] == 3
+    # question 3 failed the check, so it was rewritten
+    assert "2x + 3" not in qs[2]["question"]
 
 
 def test_cli_custom_plan_from_notes(fake_ai, tmp_path):
@@ -76,7 +84,7 @@ def test_cli_custom_plan_from_notes(fake_ai, tmp_path):
     qs = exam["questions"]
     assert [q["type"] for q in qs] == ["mcq"] * 6 + ["short"] * 2
     assert qs[0]["options"] == ["1", "2", "3.5", "4"]  # letter prefixes stripped
-    assert qs[-1]["marks"] == 4 and qs[-1]["answer"].startswith("Subtract")
+    assert qs[-1]["marks"] == 4 and qs[-1]["answer"] == "2x = 7, so x = 3.5"  # fixed by the check
     assert [s["name"] for s in exam["sections"]] == ["Section A: Multiple choice",
                                                      "Section B: Short answer"]
     assert "Plants make glucose" in exam["context"]["notes"]
@@ -215,7 +223,7 @@ def test_chinese_exam_language(fake_ai, tmp_path):
 
 
 def test_difficulty_targets_and_custom_mix():
-    from easy_exam.generator import difficulty_targets, normalise_mix
+    from sgpt.generator import difficulty_targets, normalise_mix
     assert difficulty_targets(5, {"easy": 30, "medium": 50, "hard": 20}) == \
         ["easy", "easy", "medium", "medium", "hard"]
     assert difficulty_targets(3, {"easy": 0, "medium": 0, "hard": 100}) == ["hard"] * 3

@@ -99,6 +99,7 @@ class ExamRequest:
     difficulty_mix: dict | None = None  # {"easy": 30, "medium": 50, "hard": 20} for "custom"
     challenge: int = 0              # -2 (much easier) … +2 (much harder), on top of the mix
     analysis: dict | None = None    # a saved past-paper analysis, so it is not redone
+    verify: bool = True             # have the AI double-check every question and answer
 
 
 # --- Helpers -----------------------------------------------------------------------------
@@ -431,6 +432,73 @@ def solve_questions(client, ctx: dict, questions: list[dict], progress: Progress
                   + ", ".join(str(q["number"]) for q in questions))
 
 
+def _check_item(q: dict) -> str:
+    points = "; ".join(f"{p['point']} ({p['marks']})" for p in q["marking_points"])
+    return (_question_text(q) + f"\nProposed answer: {q['answer']}\n"
+            f"Proposed final answer: {q['final_answer']}\nProposed marking points: {points}")
+
+
+def verify_questions(client, ctx: dict, questions: list[dict], progress: Progress) -> list[dict]:
+    """Second opinion on each question and answer. Fixes wrong answers in place, marks each
+    question's "check" as "verified", "corrected" or "flagged", and returns the flagged ones."""
+    prompt = prompts.CHECK_PROMPT.format(
+        level=ctx["level"], subject=ctx["subject"], notes=ctx["notes"][:4000],
+        items="\n\n".join(_check_item(q) for q in questions))
+    system = prompts.CHECK_SYSTEM + i18n.write_rule(ctx.get("language"), ctx.get("source_language"))
+    for _ in range(2):
+        reply = client.chat(system, prompt, json_mode=True, max_tokens=8192,
+                            should_stop=progress.cancelled, think=True)
+        try:
+            data = parse_json(reply)
+        except ValueError:
+            continue
+        checks = data.get("checks") if isinstance(data, dict) else None
+        if not isinstance(checks, list) or not checks:
+            continue
+        by_number = {_as_int(c.get("number")): c for c in checks if isinstance(c, dict)}
+        flagged = []
+        for i, q in enumerate(questions):
+            c = by_number.get(q["number"]) or (checks[i] if i < len(checks) else None)
+            if not isinstance(c, dict):
+                continue
+            q["check_note"] = _text(c.get("problem"))
+            if c.get("question_ok") is False:
+                q["check"] = "flagged"
+                flagged.append(q)
+            elif c.get("answer_ok") is False and _text(c.get("answer")):
+                q["answer"] = _text(c.get("answer"))
+                q["final_answer"] = _text(c.get("final_answer")) or q["final_answer"]
+                points = [{"point": _text(p.get("point")), "marks": max(_as_int(p.get("marks")) or 1, 1)}
+                          for p in c.get("marking_points") or []
+                          if isinstance(p, dict) and _text(p.get("point"))]
+                if points:
+                    q["marking_points"] = points
+                q["check"] = "corrected"
+            else:
+                q["check"] = "verified"
+        return flagged
+    progress.warn("could not double-check questions " + ", ".join(str(q["number"]) for q in questions))
+    return []
+
+
+def _replace_flagged(client, ctx: dict, questions: list[dict], flagged: list[dict],
+                     rng: random.Random, progress: Progress) -> None:
+    """Rewrite questions the checker rejected, once, and check the new versions."""
+    for old in flagged:
+        batch = {"count": 1, "type": old["type"], "marks": old["marks"],
+                 "topics": [old["topic"]] if old["topic"] else [], "targets": [old["difficulty"]],
+                 "description": f"- 1 × {QUESTION_TYPES[old['type']]['label']} question, "
+                                f"{old['marks']} mark(s). Avoid this problem: {old['check_note']}"}
+        new = write_questions(client, ctx, batch, [q["question"] for q in questions], rng, progress)
+        if not new:
+            continue
+        q = new[0]
+        q["section"], q["number"] = old["section"], old["number"]
+        solve_questions(client, ctx, [q], progress)
+        verify_questions(client, ctx, [q], progress)
+        questions[questions.index(old)] = q
+
+
 # --- The whole exam -----------------------------------------------------------------------
 
 def _plan_sections(request: ExamRequest, blueprint: dict | None) -> list[dict]:
@@ -514,7 +582,7 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
             b["targets"], targets = targets[:b["count"]], targets[b["count"]:]
     n_questions = sum(b["count"] for s in sections for b in s["batches"])
     steps.total = (steps.done + sum(len(s["batches"]) for s in sections)
-                   + -(-n_questions // SOLVE_BATCH))
+                   + -(-n_questions // SOLVE_BATCH) * (2 if request.verify else 1))
 
     questions: list[dict] = []
     for index, sec in enumerate(sections):
@@ -532,6 +600,13 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
         batch = questions[start:start + SOLVE_BATCH]
         steps(f"Writing answers for questions {batch[0]['number']}–{batch[-1]['number']}")
         solve_questions(client, ctx, batch, progress)
+        if request.verify:
+            steps(f"Double-checking questions {batch[0]['number']}–{batch[-1]['number']}")
+            flagged = verify_questions(client, ctx, batch, progress)
+            if flagged:
+                progress.warn("Rewriting question(s) " + ", ".join(str(q["number"]) for q in flagged)
+                              + " that failed the check")
+                _replace_flagged(client, ctx, questions, flagged, rng, progress)
     progress.step(steps.total, steps.total, "Done")
 
     total = sum(q["marks"] for q in questions)
@@ -549,6 +624,7 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
         "difficulty": request.difficulty,
         "difficulty_mix": mix,
         "challenge": request.challenge,
+        "verified": request.verify,
         "analysis": analysis,
         "duration_minutes": duration,
         "instructions": ((blueprint or {}).get("instructions") if language == "en" else None)
@@ -582,6 +658,8 @@ def regenerate_question(client, exam: dict, number: int, progress: Progress | No
     q = new[0]
     q["section"], q["number"] = old["section"], number
     solve_questions(client, ctx, [q], progress)
+    if exam.get("verified", True):
+        verify_questions(client, ctx, [q], progress)
     exam["questions"] = [q if x["number"] == number else x for x in exam["questions"]]
     return q
 

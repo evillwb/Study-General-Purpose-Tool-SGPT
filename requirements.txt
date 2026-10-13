@@ -1,6 +1,8 @@
-pymupdf>=1.24        # reading PDFs
+pymupdf>=1.24        # reading and writing PDFs
 flask>=3.0           # the web app
-markdown>=3.5        # showing exams in the app
+markdown>=3.5        # showing exams and notes
 rapidocr>=3.0        # OCR for scanned PDFs and photos (offline, models included)
 onnxruntime>=1.17    # runs the OCR models
+python-docx>=1.1     # Word (.docx) export and conversion
+pdf2docx>=0.5        # PDF -> Word keeping the layout
 anthropic>=1.0       # only needed for the Anthropic Claude provider
