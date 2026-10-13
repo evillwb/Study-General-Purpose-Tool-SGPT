@@ -7,6 +7,9 @@ on:
   push:
     branches: [main, "claude/**"]
   workflow_dispatch:
+  schedule:
+    # Weekly rebuild, so SGPT.exe has the newest yt-dlp (sites like YouTube change often).
+    - cron: "17 3 * * 1"
 
 permissions:
   contents: write

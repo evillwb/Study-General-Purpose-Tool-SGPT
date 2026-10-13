@@ -6,15 +6,18 @@ Every client has the same small interface used by the generator:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-from .ollama_client import Cancelled, LLMError, OllamaClient, strip_thinking
+from .ollama_client import (BUSY_CODES, RETRY_WAITS, Cancelled, LLMError, OllamaClient, busy_message,
+                            strip_thinking, wait_to_retry)
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,12 @@ def _error_message(body: str) -> str:
     return str(err)[:300]
 
 
+# Model names that accept images on OpenAI-compatible APIs.
+_VISION_MODELS = re.compile(
+    r"gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|o[34]-|gemini|vision|llava|llama-4|claude|pixtral|"
+    r"qwen[\d.]*-?vl|gemma-?3|grok-[\d]+v|mistral-(?:medium|small)-3", re.IGNORECASE)
+
+
 class OpenAICompatClient:
     def __init__(self, base_url: str, api_key: str, model: str, *, label: str = "API",
                  key_env: str | None = None, temperature: float = 0.7, seed: int | None = None,
@@ -163,9 +172,7 @@ class OpenAICompatClient:
             message = _error_message(exc.read().decode(errors="replace"))
             if exc.code in (401, 403):
                 raise LLMError(f"{self.label} rejected the API key: {message}") from exc
-            if exc.code == 429:
-                raise LLMError(f"{self.label} rate limit or quota reached: {message}") from exc
-            raise _HTTPError(exc.code, f"{self.label} error {exc.code}: {message}") from exc
+            raise _HTTPError(exc.code, f"{self.label} error {exc.code}: {message}", message) from exc
         except urllib.error.URLError as exc:
             raise LLMError(f"Cannot reach {self.label} at {self.base_url} ({exc.reason}).") from exc
 
@@ -185,14 +192,25 @@ class OpenAICompatClient:
         self._require_key()
         self.list_models()  # confirms the key and URL work; model errors surface on first call
 
+    @property
+    def vision(self) -> bool:
+        """Whether the model can read images (judged from its name)."""
+        return bool(_VISION_MODELS.search(self.model)) and "deepseek" not in self.base_url
+
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
              label: str = "", should_stop: Callable[[], bool] | None = None,
-             think: bool = False) -> str:
+             think: bool = False, images: list[bytes] | None = None) -> str:
         self._require_key()
+        content = prompt
+        if images and self.vision:
+            content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64," + base64.b64encode(i).decode()}}
+                for i in images]
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": prompt}],
+                         {"role": "user", "content": content}],
             "stream": True,
             "temperature": self.temperature,
         }
@@ -206,12 +224,19 @@ class OpenAICompatClient:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        # Models differ in which options they accept; drop any option they reject and retry.
-        for _ in range(4):
+        # Models differ in which options they accept: drop any option they reject and retry.
+        # A busy or rate-limited provider is retried after a wait.
+        busy_tries = 0
+        for _ in range(4 + len(RETRY_WAITS)):
             try:
                 return self._stream(payload, should_stop)
             except _HTTPError as exc:
                 text = str(exc).lower()
+                if exc.code in BUSY_CODES:
+                    if wait_to_retry(self.label, busy_tries, should_stop):
+                        busy_tries += 1
+                        continue
+                    raise LLMError(busy_message(self.label, exc.code, exc.detail)) from None
                 if exc.code != 400:
                     raise LLMError(str(exc)) from None
                 dropped = False
@@ -238,7 +263,11 @@ class OpenAICompatClient:
                     break
                 event = json.loads(data)
                 if event.get("error"):
-                    raise LLMError(f"{self.label}: {_error_message(json.dumps(event))}")
+                    message = _error_message(json.dumps(event))
+                    code = event["error"].get("code") if isinstance(event["error"], dict) else None
+                    if isinstance(code, int) and code in BUSY_CODES and not chunks:
+                        raise _HTTPError(code, f"{self.label} error {code}: {message}", message)
+                    raise LLMError(f"{self.label}: {message}")
                 for choice in event.get("choices", []):
                     chunks.append((choice.get("delta") or {}).get("content") or "")
                 if should_stop and should_stop():
@@ -247,9 +276,10 @@ class OpenAICompatClient:
 
 
 class _HTTPError(LLMError):
-    def __init__(self, code: int, message: str):
+    def __init__(self, code: int, message: str, detail: str = ""):
         super().__init__(message)
         self.code = code
+        self.detail = detail or message
 
 
 # --- Anthropic Claude (official SDK) -------------------------------------------------
@@ -277,7 +307,8 @@ class AnthropicClient:
             except ImportError as exc:
                 raise LLMError("The Claude provider needs the Anthropic SDK: "
                                "pip install anthropic") from exc
-            self._client = anthropic.Anthropic(api_key=self.api_key)
+            # The SDK itself retries rate limits and overloads (429, 5xx, 529) with backoff.
+            self._client = anthropic.Anthropic(api_key=self.api_key, max_retries=5)
         return self._client
 
     def _call(self, fn):
@@ -292,8 +323,10 @@ class AnthropicClient:
         except anthropic.NotFoundError as exc:
             raise LLMError(f"Anthropic: model '{self.model}' not found.") from exc
         except anthropic.RateLimitError as exc:
-            raise LLMError("Anthropic rate limit reached. Wait a minute and try again.") from exc
+            raise LLMError(busy_message(self.label, 429, exc.message)) from exc
         except anthropic.APIStatusError as exc:
+            if exc.status_code in BUSY_CODES:
+                raise LLMError(busy_message(self.label, exc.status_code, exc.message)) from exc
             raise LLMError(f"Anthropic error {exc.status_code}: {exc.message}") from exc
         except anthropic.APIConnectionError as exc:
             raise LLMError("Cannot reach the Anthropic API. Check your internet connection.") from exc
@@ -306,10 +339,17 @@ class AnthropicClient:
     def check_model(self) -> None:
         self.list_models()
 
+    vision = True  # every current Claude model reads images
+
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
              label: str = "", should_stop: Callable[[], bool] | None = None,
-             think: bool = False) -> str:
+             think: bool = False, images: list[bytes] | None = None) -> str:
         client = self._sdk()
+        content = prompt
+        if images:
+            content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                     "data": base64.b64encode(i).decode()}}
+                       for i in images] + [{"type": "text", "text": prompt}]
         if json_mode:
             system += "\nRespond with a single JSON object and nothing else."
         params = {
@@ -317,7 +357,7 @@ class AnthropicClient:
             # Thinking counts toward max_tokens on current models, so leave plenty of room.
             "max_tokens": 64000,
             "system": system,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "output_config": {"effort": self.effort},
         }
 

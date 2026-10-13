@@ -227,7 +227,13 @@ def test_chinese_exam_language(fake_ai, tmp_path):
         assert heading in md
     writer = next(r for r in server.requests if "brand-new" in r["messages"][0]["content"])
     assert "Simplified Chinese" in writer["messages"][0]["content"]
-    assert "source material is in English" in writer["messages"][0]["content"]
+    assert "Some of the material is in English" in writer["messages"][0]["content"]
+    # The fake model writes its questions in English. Ones with enough words to judge are
+    # caught and translated; short formula-like ones are left alone.
+    from sgpt.generator import _language_text
+    from sgpt.i18n import clearly_not_in
+    assert any(q["question"].startswith("（译）") for q in exam["questions"])
+    assert not any(clearly_not_in(_language_text(q), "zh") for q in exam["questions"])
 
 
 def test_difficulty_targets_and_custom_mix():
@@ -237,3 +243,70 @@ def test_difficulty_targets_and_custom_mix():
     assert difficulty_targets(3, {"easy": 0, "medium": 0, "hard": 100}) == ["hard"] * 3
     assert normalise_mix({"easy": 1, "medium": 1, "hard": 1}) == {"easy": 33, "medium": 34, "hard": 33}
     assert normalise_mix({"easy": 0, "medium": 0, "hard": 0}) is None
+
+
+def test_compiled_chapters_are_all_found_and_analysed(tmp_path):
+    """A 60-page file of every chapter's past-year questions, numbering restarting at 1."""
+    import pymupdf
+
+    from sgpt.generator import MAX_PARTS, analysis_steps, paper_parts
+    from sgpt.sources import Source
+
+    doc = pymupdf.open()
+    for chapter in range(1, 13):
+        for page in range(5):
+            lines = [f"Bab {chapter} Topik {chapter}"] if page == 0 else []
+            for q in range(1, 4):
+                n = page * 3 + q
+                lines.append(f"{n}. Chapter {chapter} question {n}: " + "explain this idea " * 12 + "[4 markah]")
+            doc.new_page().insert_textbox(pymupdf.Rect(40, 40, 560, 800), "\n".join(lines), fontsize=9)
+    doc.save(tmp_path / "all_chapters.pdf")
+
+    paper = extract_paper(tmp_path / "all_chapters.pdf")
+    assert len(paper.questions) == 12 * 15
+    assert paper.questions[-1].section == "Bab 12 Topik 12" and paper.questions[-1].page == 60
+    assert paper.questions[0].section == "Bab 1 Topik 1"
+
+    parts = paper_parts(paper, 12000)
+    assert 1 < len(parts) <= MAX_PARTS
+    joined = "\n".join(parts)
+    assert "=== Bab 12 Topik 12 ===" in joined and "Chapter 12 question 15" in joined  # the end is read too
+    source = Source("paper", "all_chapters.pdf", paper.text, paper=paper)
+    assert analysis_steps([source], 12000) == len(parts)
+
+
+def test_busy_provider_is_retried(fake_ai, monkeypatch):
+    """Gemini-style "503: high demand" errors are retried after a wait, then reported clearly."""
+    import pytest
+
+    from sgpt import ollama_client
+    from sgpt.ollama_client import Cancelled, LLMError
+    from sgpt.providers import OpenAICompatClient
+
+    monkeypatch.setattr(ollama_client, "RETRY_WAITS", (0.01, 0.01, 0.01))
+    host, server = fake_ai
+    client = OpenAICompatClient(host + "/v1", "good-key", "gpt-test", label="Google Gemini")
+
+    server.busy = 2
+    assert client.chat("You write study notes.", "x")  # two 503s, then it works
+    assert server.busy == 0
+
+    class Job:
+        notes = []
+
+        def note(self, message):
+            self.notes.append(message)
+
+        def cancelled(self):
+            return False
+
+    job = Job()
+    server.busy = 10
+    with pytest.raises(LLMError, match=r"busy or having problems \(error 503\).*high demand.*another model"):
+        client.chat("You write study notes.", "x", should_stop=job.cancelled)
+    assert len(job.notes) == 3 and "Google Gemini is busy right now" in job.notes[0]
+
+    monkeypatch.setattr(ollama_client, "RETRY_WAITS", (30,))
+    server.busy = 10
+    with pytest.raises(Cancelled):  # Stop works while waiting
+        client.chat("You write study notes.", "x", should_stop=lambda: True)

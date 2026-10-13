@@ -78,17 +78,55 @@ setting and Anthropic's automatic fallback to another model if a request is decl
 
 ## 4. Languages
 
-Choose the **exam language** (English, 中文, Bahasa Melayu) and the language your
-**sources** are in. Sources in one language can produce an exam in another. Question
-numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is recognised in
-past papers.
+Everything SGPT makes can be in **English, 中文 or Bahasa Melayu**: choose the exam
+language on the Exam page, and the language on the Study and Question bank pages.
 
-## 5. Converting files (optional: LibreOffice)
+Sources don't have to match. Each file's language is detected (shown as "Auto: 中文",
+"Auto: English + 中文" for a bilingual paper, and so on); change it in the file list if the
+guess is wrong. The AI is told which languages the sources are in and translates what it
+uses. Afterwards SGPT checks every question and answer, and translates any that came out in
+the wrong language (you'll see a note in the progress list).
 
-PDF, Word (`.docx`), images, Markdown, text and HTML convert with nothing extra
-installed. To convert old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint and Excel, and
-to get the most faithful Word → PDF layout, install the free
-[LibreOffice](https://www.libreoffice.org/download/). SGPT finds it automatically.
+Question numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is
+recognised in past papers.
+
+## 5. Converting files: keeping the original look
+
+| Conversion | How the look is kept |
+| --- | --- |
+| Word, PowerPoint, Excel → PDF | Uses **Microsoft Office** if it's installed (Windows), otherwise the free [LibreOffice](https://www.libreoffice.org/download/): an exact copy. With neither, Word files keep their headings, tables and pictures, but fonts and page breaks may differ (SGPT tells you). |
+| PDF → Word | Same layout, with text, tables and pictures in place. |
+| Scanned PDF or photo → Word | Each page is rebuilt with OCR: the text in the same place and size, and diagrams cut out of the scan as pictures (with their labels). |
+| Scanned PDF or photo → PDF (OCR page, or "Searchable PDF") | The original pages, untouched, with hidden text behind them so you can search, select and copy. |
+| Old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint, Excel | Need Microsoft Office or LibreOffice. |
+
+## 6. Downloading video and audio
+
+The **Download** page uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) with ffmpeg built in, so
+MP3 conversion and merging HD video with its sound need nothing else installed. Paste a link,
+choose **auto** (video with sound), **audio** or **mute**, and press the arrow. The settings
+panel works like cobalt's: video quality, codec (h264 / av1 / vp9), container, audio format and
+bitrate, dub and subtitle language, filename style, file metadata, h265 and X/Twitter GIFs.
+
+- **Sites that need you to be signed in** (Instagram, Facebook, age-restricted YouTube): sign in
+  to the site in your browser, then pick that browser under *other → sign-in cookies*. The
+  cookies are read on your computer only. Firefox works best; close Chrome or Edge first.
+- **Downloads suddenly fail** on a site: sites change often. Update yt-dlp with
+  `pip install -U yt-dlp` inside `.venv`, or get the newest SGPT.exe (rebuilt every week).
+- **Study from a video:** *Use this video's subtitles as a study source* saves the subtitles as a
+  text file in your sources, for notes, flashcards or an exam.
+
+Only download videos you own or have permission to save, and respect each site's terms.
+
+## 7. Kahoot and Quizlet
+
+- **Kahoot!**: Export → Kahoot gives a spreadsheet of the multiple-choice questions (exams,
+  MCQ quizzes and grammar tests). In Kahoot, create a kahoot, choose **Add question →
+  Import spreadsheet**, and pick the file. Long questions are shortened to Kahoot's limits
+  (120 characters, 75 per answer).
+- **Quizlet**: Export → Quizlet gives a text file. In Quizlet, create a set, choose
+  **Import**, and paste the file's contents (tab between term and definition, new line
+  between cards).
 
 ## Troubleshooting
 
@@ -97,11 +135,16 @@ to get the most faithful Word → PDF layout, install the free
 | "Ollama is not running" | Open the Ollama app, or run `ollama serve`. |
 | "… is not installed. Run: ollama pull …" | Run that command, or choose another model. |
 | "rejected the API key" | Paste the key again in the settings, and check you have credit with that provider. |
-| "rate limit or quota reached" | Wait a minute, or check your plan with the provider. |
+| "rate limit or quota reached" | SGPT already waited and tried 5 times. Wait a few minutes, or check your plan with the provider. |
+| "busy or having problems (error 503)", e.g. Gemini "high demand" | The provider is overloaded. SGPT waits and tries again by itself (after 5, 15, 30 and 60 seconds); if it still fails, try later or choose another model (a "lite" model is often less busy). |
 | A scanned PDF says "Install OCR" | `pip install rapidocr onnxruntime` (inside `.venv`). |
 | Web search finds nothing | Your network may block DuckDuckGo: add a Brave or Tavily key, or add your own sources. |
 | Questions are wrong or repetitive | Use a bigger model, add better sources, lower *Creativity*, or add instructions under *More options*. |
 | Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
+| Something is taking too long | Every job has a **Stop** button and shows the time left. Jobs running on another page appear in the bottom-right corner, with Stop. |
+| Start again from nothing | **Settings → Your data → Delete all data** removes uploads, exams, study sets, converted files, the question bank and caches (and, if ticked, your settings and API keys). |
+| A download says the site wants you to sign in | Download settings → other → sign-in cookies: choose the browser where you're signed in (Firefox works best). |
+| Downloads from a site stopped working | `pip install -U yt-dlp` inside `.venv`, or download the newest SGPT.exe. |
 | Port already in use | `python -m sgpt.app --port 8800` |
 | "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
 | "The system cannot find the path specified" from `start-sgpt.bat` | Extract the ZIP first (right-click → Extract All) and run the launcher from the extracted folder. If it still happens, delete the `.venv` folder and run it again, or use SGPT.exe. |

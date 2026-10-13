@@ -604,3 +604,98 @@ output { font-weight: 400; color: var(--text); }
   .sheet h2, .sheet h3 { break-after: avoid; }
 }
 .file-icon.png, .file-icon.jpg, .file-icon.jpeg, .file-icon.webp { background: #dcfce7; color: #15803d; }
+
+/* Question bank: picture of the printed question */
+.qpicture { display: block; max-width: 100%; height: auto; margin: 4px 0 2px; border-radius: 6px;
+  background: #fff; border: 1px solid var(--border); }
+
+/* Progress: Stop button next to the step count */
+.meta-right { display: inline-flex; gap: 10px; align-items: center; }
+.panel-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.panel-head .panel-title { margin: 0; }
+.btn.danger { color: var(--bad); }
+
+/* Jobs running on other pages */
+.job-dock { position: fixed; right: 16px; bottom: 16px; z-index: 40; display: flex; flex-direction: column;
+  gap: 8px; width: min(340px, calc(100vw - 32px)); }
+.job-card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .14); padding: 10px 12px; display: grid; gap: 6px; font-size: 13px; }
+.job-card .job-top { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.job-card .job-name { font-weight: 600; background: none; border: 0; padding: 0; color: var(--text);
+  cursor: pointer; text-align: left; font: inherit; font-weight: 600; }
+.job-card .job-msg { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-card .bar { height: 6px; margin: 0; }
+.job-card .bar > div { height: 100%; background: var(--accent); border-radius: 999px; transition: width .3s; }
+@media print { .job-dock { display: none; } }
+
+/* OCR exports: "Same look" and "Text only" groups */
+.btn-group { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px;
+  border: 1px solid var(--border); border-radius: 10px; }
+.btn-group .group-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+
+/* File list (exam sources): the role and language menus sit under the file name */
+#file-list li { grid-template-columns: auto 1fr auto; }
+#file-list li .file-actions { grid-column: 3; grid-row: 1; }
+.file-selects { grid-column: 2 / 4; grid-row: 2; display: flex; gap: 6px; flex-wrap: wrap; }
+.file-selects .role { grid-column: auto; grid-row: auto; }
+.file-selects .lang { max-width: 170px; }
+.field-hint { margin: -4px 0 0; }
+
+.bank-actions { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.field.compact { gap: 4px; font-size: 13px; }
+.field.compact select { min-width: 150px; }
+
+/* Download page (video / audio), laid out like cobalt */
+.media-view { max-width: 1120px; margin: 0 auto; padding: 28px 24px; display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px; gap: 24px; align-items: start; }
+.media-main { display: flex; flex-direction: column; gap: 14px; }
+.media-hero h1 { margin: 0; }
+.media-hero p { margin: 4px 0 0; }
+.media-input { display: flex; align-items: center; gap: 8px; background: var(--surface);
+  border: 1.5px solid var(--border); border-radius: 14px; padding: 6px 6px 6px 14px; }
+.media-input:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.media-input > svg { width: 20px; height: 20px; color: var(--muted); flex: none; }
+.media-input input { flex: 1; min-width: 0; border: 0; background: none; font-size: 16px; padding: 10px 0;
+  color: var(--text); outline: none; }
+.media-input #media-go { padding: 10px 14px; border-radius: 10px; }
+.media-input #media-go svg { width: 20px; height: 20px; display: block; }
+.media-row { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.media-modes { flex: 0 1 auto; }
+.media-modes label { flex: none; }
+.hint.center, .legal { text-align: center; }
+.legal { font-size: 12px; margin-top: 4px; }
+.media-extra { display: flex; justify-content: center; }
+.media-progress { display: flex; gap: 14px; align-items: center; }
+.media-progress img { width: 120px; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; flex: none; }
+.media-progress-main { flex: 1; min-width: 0; display: grid; gap: 6px; }
+.media-progress .bar { margin: 0; }
+#media-fill { height: 100%; width: 0; background: var(--accent); border-radius: 999px; transition: width .3s; }
+.media-settings { position: sticky; top: 76px; display: grid; gap: 14px; }
+.media-settings .tabs { margin: 0; }
+.media-setting { display: grid; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.media-setting:last-child { border-bottom: 0; padding-bottom: 0; }
+.media-setting h3 { margin: 0; font-size: 14px; }
+.media-setting .hint { margin: 0; }
+.segmented.wrap-auto label { flex: 1 0 auto; }
+.segmented.wrap-auto span { padding: 6px 10px; font-size: 13px; }
+.file-icon.media { background: #e0e7ff; color: #3730a3; }
+@media (max-width: 900px) {
+  .media-view { grid-template-columns: 1fr; padding: 20px 16px; }
+  .media-settings { position: static; }
+}
+#media-url { border: 0; background: transparent; box-shadow: none; padding: 10px 0; border-radius: 0; }
+@media (max-width: 640px) {
+  #media-list li, #conv-list li { display: flex; align-items: center; gap: 8px; }
+  #media-list .item-main, #conv-list .item-main { flex: 1; min-width: 0; }
+  #media-list .item-name, #conv-list .item-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.media-sites { margin-top: 8px; font-size: 13px; }
+.media-sites summary { cursor: pointer; color: var(--accent); width: max-content; }
+.media-sites p { margin: 6px 0 0; line-height: 1.6; }
+
+/* Formulas and diagrams */
+img.math { vertical-align: middle; max-height: 4em; margin: 0 1px; }
+img.diagram, #sheet img[src*="/figure/"] { display: block; max-width: min(100%, 360px); margin: 8px 0;
+  background: #fff; border-radius: 8px; padding: 6px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) img.math { filter: invert(1) hue-rotate(180deg); } }
+:root[data-theme="dark"] img.math { filter: invert(1) hue-rotate(180deg); }

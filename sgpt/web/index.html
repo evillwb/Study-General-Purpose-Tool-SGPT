@@ -22,6 +22,7 @@
       <button class="nav-link" data-view="bank" type="button">Question bank</button>
       <button class="nav-link" data-view="ocr" type="button">OCR</button>
       <button class="nav-link" data-view="convert" type="button">Convert</button>
+      <button class="nav-link" data-view="media" type="button">Download</button>
     </nav>
     <div class="top-actions">
       <button id="status" class="status" type="button" title="AI settings">
@@ -43,10 +44,9 @@
           <label class="field">Subject <input id="subject" placeholder="e.g. Biology"></label>
           <label class="field">Level <input id="level" placeholder="e.g. GCSE, Year 9"></label>
         </div>
-        <div class="row">
-          <label class="field">Exam language <select id="language"></select></label>
-          <label class="field">Sources are in <select id="source_language"><option value="auto">Any language (auto)</option></select></label>
-        </div>
+        <label class="field">Exam language <select id="language"></select></label>
+        <p class="hint field-hint">The exam, answers and marking scheme are all written in this language.
+          Sources can be in any language.</p>
       </section>
 
       <section class="panel">
@@ -87,6 +87,8 @@
 
       <section class="panel">
         <h2 class="panel-title"><span class="step">3</span>Questions</h2>
+        <label class="field">Exam format
+          <select id="template"><option value="">Custom (choose below)</option></select></label>
         <div class="segmented" role="radiogroup" aria-label="Paper structure">
           <label><input type="radio" name="structure" value="custom" checked><span>Choose question types</span></label>
           <label id="match-option"><input type="radio" name="structure" value="match"><span>Match my past papers</span></label>
@@ -112,6 +114,8 @@
           <input id="challenge" type="range" min="-2" max="2" step="1" value="0" list="challenge-ticks">
           <span class="ticks"><span>Much easier</span><span>Normal</span><span>Much harder</span></span>
         </label>
+        <label class="check strong"><input id="diagrams" type="checkbox" checked>
+          <span><b>Add diagrams and graphs</b><small>Graphs, charts, triangles and number lines where a question needs one.</small></span></label>
         <label class="check strong"><input id="verify" type="checkbox" checked>
           <span><b>Double-check every answer</b><small>The AI re-solves each question to catch mistakes. Slower, more accurate.</small></span></label>
         <details class="more">
@@ -178,6 +182,7 @@
                 <span>Model answers</span><a data-part="answers" data-format="docx">.docx</a><a data-part="answers" data-format="pdf">.pdf</a><a data-part="answers" data-format="md">.md</a>
                 <span>Marking scheme</span><a data-part="scheme" data-format="docx">.docx</a><a data-part="scheme" data-format="pdf">.pdf</a><a data-part="scheme" data-format="md">.md</a>
                 <span>Everything</span><a data-part="all" data-format="docx">.docx</a><a data-part="all" data-format="pdf">.pdf</a><a data-part="all" data-format="md">.md</a>
+                <span>Quiz apps</span><a data-part="all" data-format="kahoot" title="Multiple-choice questions, for Kahoot!: Add question → Import spreadsheet">Kahoot</a><a data-part="all" data-format="quizlet" title="Question and answer pairs, for Quizlet: Create → Import → paste">Quizlet</a><span></span>
                 <button id="copy" type="button">Copy everything as Markdown</button>
               </div>
             </div>
@@ -248,7 +253,7 @@
         <input id="st-topic" class="big-input" placeholder="Topic, e.g. Cell division" autocomplete="off">
         <div class="row">
           <label class="field">Level <input id="st-level" placeholder="e.g. Form 4, GCSE"></label>
-          <label class="field" data-for="notes flashcards vocab quiz">Language <select id="st-language"></select></label>
+          <label class="field" data-for="notes flashcards vocab quiz grammar">Language <span class="hint" data-for="grammar">(of the explanations)</span> <select id="st-language"></select></label>
           <label class="field" data-for="grammar">Test
             <select id="st-test"></select>
           </label>
@@ -329,11 +334,15 @@
         <h1>Question bank</h1>
         <p class="muted">Every question from your past-year papers, sorted by chapter, with the hardest ones picked out.</p>
       </div>
-      <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+      <div class="bank-actions">
+        <label class="field compact" title="Chapter names, topics, reasons and answers are written in this language. The questions stay as printed.">Language
+          <select id="bank-language"></select></label>
+        <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+      </div>
     </div>
     <p id="bank-note" class="note" hidden></p>
     <div id="bank-progress" class="panel ocr-progress" hidden>
-      <div class="progress-meta"><span id="bank-msg"></span><span id="bank-steps"></span></div>
+      <div class="progress-meta"><span id="bank-msg"></span><span class="meta-right"><span id="bank-steps"></span><button id="bank-cancel" class="btn small" type="button">Stop</button></span></div>
       <div class="bar"><div id="bank-fill"></div></div>
     </div>
     <div id="bank-body" hidden>
@@ -349,6 +358,10 @@
           <option value="hard">Hardest first</option>
           <option value="marks">Most marks first</option>
         </select>
+        <select id="bank-view" aria-label="Show questions as" title="Pictures keep diagrams and symbols exactly as printed">
+          <option value="pictures">Show pictures</option>
+          <option value="text">Show text</option>
+        </select>
         <select id="bank-n" aria-label="How many per chapter" hidden>
           <option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option>
         </select>
@@ -363,6 +376,69 @@
       <div id="bank-chips" class="bank-chips"></div>
       <div id="bank-list" class="questions"></div>
     </div>
+  </main>
+
+  <!-- ============ DOWNLOAD (video / audio) ============ -->
+  <main id="view-media" class="media-view" hidden>
+    <div class="media-main">
+      <div class="media-hero">
+        <h1>Download video and audio</h1>
+        <p class="muted">YouTube and over a thousand other sites. Saved on this computer.</p>
+        <details class="media-sites"><summary>supported sites</summary><p id="media-sites" class="hint"></p></details>
+      </div>
+      <div class="media-input">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="media-url" type="url" placeholder="paste the link here" autocomplete="off" spellcheck="false" aria-label="Link to the video">
+        <button id="media-clear" class="icon-btn" type="button" aria-label="Clear" hidden>✕</button>
+        <button id="media-go" class="btn primary" type="button" aria-label="Download">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="media-row">
+        <div id="media-modes" class="segmented media-modes" role="radiogroup" aria-label="What to download">
+          <label><input type="radio" name="media-mode" value="auto" checked><span>✨ auto</span></label>
+          <label><input type="radio" name="media-mode" value="audio"><span>♫ audio</span></label>
+          <label><input type="radio" name="media-mode" value="mute"><span>🔇 mute</span></label>
+        </div>
+        <button id="media-paste" class="btn" type="button">📋 paste</button>
+      </div>
+      <p id="media-mode-hint" class="hint center"></p>
+      <p id="media-missing" class="note warn" hidden>The downloader is not installed. In a terminal, run
+        <code>pip install yt-dlp imageio-ffmpeg</code> inside the app's <code>.venv</code>, then restart.</p>
+
+      <div id="media-progress" class="panel media-progress" hidden>
+        <img id="media-thumb" alt="" hidden>
+        <div class="media-progress-main">
+          <div class="item-name" id="media-title">Getting ready…</div>
+          <div class="progress-meta"><span id="media-msg"></span><span class="meta-right"><span id="media-time"></span><button id="media-cancel" class="btn small" type="button">Stop</button></span></div>
+          <div class="bar"><div id="media-fill"></div></div>
+        </div>
+      </div>
+
+      <div class="media-extra">
+        <button id="media-subs" class="btn ghost small" type="button"
+          title="Save the video's subtitles as a text file in your exam sources, to make notes, flashcards or an exam from it">📝 Use this video's subtitles as a study source</button>
+      </div>
+
+      <section id="media-results" class="panel" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">Downloads</h2>
+          <button id="media-clear-all" class="btn small danger" type="button">Delete all</button>
+        </div>
+        <ul id="media-list" class="file-list"></ul>
+      </section>
+      <p class="hint center legal">Only download videos you own or have permission to save (for example your own
+        uploads or Creative Commons videos). Respect each site's terms and copyright.</p>
+    </div>
+
+    <aside class="panel media-settings" aria-label="Download settings">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-media-tab="video" role="tab" type="button">🎬 video</button>
+        <button class="tab" data-media-tab="audio" role="tab" type="button">🎧 audio</button>
+        <button class="tab" data-media-tab="other" role="tab" type="button">⚙ other</button>
+      </div>
+      <div id="media-settings-body"></div>
+    </aside>
   </main>
 
   <!-- ============ CONVERT ============ -->
@@ -386,12 +462,15 @@
       <p id="conv-hint" class="hint"></p>
       <button id="conv-go" class="btn primary big" type="button" disabled>Convert</button>
       <div id="conv-progress" class="ocr-progress" hidden>
-        <div class="progress-meta"><span id="conv-msg"></span></div>
+        <div class="progress-meta"><span id="conv-msg"></span><button id="conv-cancel" class="btn small" type="button">Stop</button></div>
         <div class="bar"><div id="conv-fill"></div></div>
       </div>
     </section>
     <section id="conv-results" class="panel" hidden>
-      <h2 class="panel-title">Ready to download</h2>
+      <div class="panel-head">
+        <h2 class="panel-title">Converted files</h2>
+        <button id="conv-clear" class="btn small danger" type="button">Delete all</button>
+      </div>
       <ul id="conv-list" class="file-list"></ul>
     </section>
   </main>
@@ -455,10 +534,17 @@
         </label>
       </div>
       <p class="hint">Keys are stored only on this computer, in <code>~/.sgpt/config.json</code>.</p>
+
+      <h3>Your data</h3>
+      <p class="hint">Deletes everything SGPT keeps: uploaded files, exams, study sets, converted
+        files, the question bank, analyses and caches. This can't be undone.</p>
+      <label class="check"><input id="wipe-settings" type="checkbox"> Also delete my AI settings and API keys</label>
+      <button id="wipe-all" class="btn danger" type="button">Delete all data…</button>
       <div class="settings-foot"><button class="btn primary" value="close">Done</button></div>
     </form>
   </dialog>
 
+  <div id="job-dock" class="job-dock" aria-live="polite"></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="/static/app.js"></script>
 </body>

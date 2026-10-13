@@ -5,10 +5,12 @@ from __future__ import annotations
 import uuid
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from . import i18n, prompts
-from .generator import QUESTION_TYPES, Progress, _as_int, _text, solve_questions, verify_questions
-from .ollama_client import parse_json
+from .generator import (QUESTION_TYPES, Progress, _as_int, _text, pictures, solve_questions,
+                        verify_questions)
+from .ollama_client import Cancelled, parse_json
 from .sources import Source
 
 CLASSIFY_BATCH = 8
@@ -16,13 +18,17 @@ CLASSIFY_BATCH = 8
 
 def _extract(client, paper: Source, progress: Progress) -> list[dict]:
     """Questions of one paper: the detected numbering, or the AI when that finds too few."""
-    found = [{"number": q.number, "text": q.text.strip(), "marks": q.marks}
+    found = [{"number": q.number, "text": q.text.strip(), "marks": q.marks,
+              "section": q.section, "page": q.page}
              for q in paper.paper.questions if len(q.text.strip()) > 10]
-    if len(found) >= 3:
+    # Trust the detected numbering unless it found very few questions for a long file.
+    if len(found) >= 3 and len(found) * 2500 >= len(paper.text):
         return found
     questions = []
     text = paper.text
-    for start in range(0, min(len(text), 36000), 12000):
+    chunks = range(0, len(text), 12000)
+    for n, start in enumerate(chunks, 1):
+        progress.step(0, 1, f"Finding the questions in {paper.title} (part {n} of {len(chunks)})")
         reply = client.chat(prompts.BANK_EXTRACT_SYSTEM,
                             prompts.BANK_EXTRACT_PROMPT.format(name=paper.title,
                                                                text=text[start:start + 12000]),
@@ -34,8 +40,9 @@ def _extract(client, paper: Source, progress: Progress) -> list[dict]:
         for q in data.get("questions") or []:
             if isinstance(q, dict) and len(_text(q.get("text"))) > 10:
                 questions.append({"number": _text(q.get("number")) or str(len(questions) + 1),
-                                  "text": _text(q.get("text")), "marks": _as_int(q.get("marks"))})
-    return questions or found
+                                  "text": _text(q.get("text")), "marks": _as_int(q.get("marks")),
+                                  "section": _text(q.get("chapter")), "page": 0})
+    return questions if len(questions) > len(found) else found
 
 
 def _snippet(q: dict, length: int) -> str:
@@ -43,20 +50,54 @@ def _snippet(q: dict, length: int) -> str:
     return text[:length] + ("…" if len(text) > length else "")
 
 
+def _picture(image_dir: Path | None, q: dict) -> bytes | None:
+    if image_dir and q.get("image"):
+        try:
+            return (image_dir / q["image"]).read_bytes()
+        except OSError:
+            return None
+    return None
+
+
 def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[str] = (),
-               progress: Progress | None = None) -> dict:
+               progress: Progress | None = None, image_dir: Path | None = None,
+               language: str = "") -> dict:
+    """Every question of the past papers, sorted into chapters with a difficulty rating.
+
+    With image_dir, a picture of each question (cut from its page) is saved there, shown
+    in the bank, and given to the AI when the model can see images.
+    """
     progress = progress or Progress()
-    done, total = 0, len(papers) + 2
+    rule = i18n.describe_rule(language) if language else ""
+    done, total = 0, len(papers) * (2 if image_dir else 1) + 2
 
     questions: list[dict] = []
     for paper in papers:
         progress.step(done, total, f"Finding the questions in {paper.title}")
+        sections: list[str] = []
         for q in _extract(client, paper, progress):
-            questions.append({"id": f"p{papers.index(paper) + 1}-q{q['number']}",
+            if q.get("section") and q["section"] not in sections:
+                sections.append(q["section"])
+            part = f"-s{sections.index(q['section']) + 1}" if q.get("section") else ""
+            questions.append({"id": f"p{papers.index(paper) + 1}{part}-q{q['number']}",
                               "paper": paper.title, **q})
         done += 1
     if not questions:
         raise RuntimeError("No questions were found in the past papers.")
+    if image_dir:
+        from .snapshots import snapshot_questions
+
+        for i, paper in enumerate(papers, 1):
+            if progress.cancelled():
+                raise Cancelled()
+            progress.step(done, total, f"Taking pictures of the questions in {paper.title}")
+            mine = [q for q in questions if q["paper"] == paper.title]
+            if paper.paper and paper.paper.path.suffix.lower() == ".pdf":
+                try:
+                    snapshot_questions(paper.paper.path, mine, image_dir, f"p{i}-")
+                except (RuntimeError, ValueError, OSError) as exc:
+                    progress.warn(f"could not take pictures of {paper.title}: {exc}")
+            done += 1
     # Make ids unique even if a paper repeats a number.
     seen: dict[str, int] = {}
     for q in questions:
@@ -70,7 +111,7 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
     listing = "\n".join(f"- {_snippet(q, 160)}" for q in questions[:120])
     chapters: list[str] = []
     for _ in range(2):
-        reply = client.chat(prompts.BANK_CHAPTERS_SYSTEM,
+        reply = client.chat(prompts.BANK_CHAPTERS_SYSTEM + rule,
                             prompts.BANK_CHAPTERS_PROMPT.format(subject=subject or "school",
                                                                 hint=hint, questions=listing),
                             json_mode=True, max_tokens=2048, should_stop=progress.cancelled)
@@ -88,11 +129,14 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
         batch = questions[start:start + CLASSIFY_BATCH]
         progress.step(done, total, f"Sorting questions {start + 1}–{start + len(batch)} of {len(questions)}")
         items = "\n\n".join(f"[id: {q['id']}] ({q['marks'] or '?'} marks)\n{_snippet(q, 1500)}" for q in batch)
+        images, note = pictures(client, [{"id": q["id"], "picture": _picture(image_dir, q)} for q in batch],
+                                "the question with id")
         for _ in range(2):
-            reply = client.chat(prompts.BANK_CLASSIFY_SYSTEM,
+            reply = client.chat(prompts.BANK_CLASSIFY_SYSTEM + rule,
                                 prompts.BANK_CLASSIFY_PROMPT.format(chapters="; ".join(chapters),
-                                                                    questions=items),
-                                json_mode=True, max_tokens=4096, should_stop=progress.cancelled)
+                                                                    questions=items) + note,
+                                json_mode=True, max_tokens=4096, should_stop=progress.cancelled,
+                                **({"images": images} if images else {}))
             try:
                 rows = parse_json(reply).get("questions") or []
             except (ValueError, AttributeError):
@@ -123,6 +167,7 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
         "created": datetime.now().isoformat(timespec="seconds"),
         "model": getattr(client, "model", ""),
         "subject": subject,
+        "language": language,
         "papers": [p.title for p in papers],
         "chapters": [c for c in order if any(q["chapter"] == c for q in questions)],
         "questions": questions,
@@ -139,7 +184,7 @@ def hardest(bank: dict, per_chapter: int = 10) -> dict[str, list[dict]]:
 
 
 def solve_bank_questions(client, bank: dict, ids: list[str], language: str = "en",
-                         progress: Progress | None = None) -> None:
+                         progress: Progress | None = None, image_dir: Path | None = None) -> None:
     """Write (and double-check) answers for chosen past-paper questions."""
     progress = progress or Progress()
     chosen = [q for q in bank["questions"] if q["id"] in set(ids) and not q.get("answer")]
@@ -150,7 +195,7 @@ def solve_bank_questions(client, bank: dict, ids: list[str], language: str = "en
         progress.step(start // 4, -(-len(chosen) // 4), f"Answering questions {start + 1}–{start + len(batch)}")
         work = [{"number": i + 1, "marks": q["marks"] or 1, "type": q["type"], "question": q["text"],
                  "options": [], "parts": [], "answer": "", "final_answer": "", "marking_points": [],
-                 "accept": ""} for i, q in enumerate(batch)]
+                 "accept": "", "picture": _picture(image_dir, q)} for i, q in enumerate(batch)]
         solve_questions(client, ctx, work, progress)
         verify_questions(client, ctx, work, progress)
         for q, w in zip(batch, work):
@@ -160,8 +205,11 @@ def solve_bank_questions(client, bank: dict, ids: list[str], language: str = "en
 
 
 def render_bank(bank: dict, view: str = "chapters", per_chapter: int = 10,
-                language: str = "en") -> str:
-    """Markdown of the bank: all questions by chapter, or the hardest per chapter."""
+                language: str = "en", pictures: bool = False) -> str:
+    """Markdown of the bank: all questions by chapter, or the hardest per chapter.
+
+    With pictures, a question that has one is shown as its picture (file name relative to
+    the bank's image folder) instead of its extracted text."""
     title = ("Hardest past-year questions" if view == "hardest" else "Past-year questions by chapter")
     out = [f"# {title}", "", f"*From: {', '.join(bank['papers'])}*", ""]
     groups = hardest(bank, per_chapter) if view == "hardest" else {
@@ -172,8 +220,12 @@ def render_bank(bank: dict, view: str = "chapters", per_chapter: int = 10,
         out += [f"## {chapter}", ""]
         for n, q in enumerate(qs, 1):
             marks = f" [{i18n.marks(language, q['marks'])}]" if q.get("marks") else ""
-            out += [f"### {n}. {q['paper']} — Q{q['number']}{marks} · difficulty {q['difficulty']}/10", ""]
-            out += ["  \n".join(q["text"].split("\n")), ""]
+            where = f"{q['paper']} — " + (f"{q['section']}, " if q.get("section") else "") + f"Q{q['number']}"
+            out += [f"### {n}. {where}{marks} · difficulty {q['difficulty']}/10", ""]
+            if pictures and q.get("image"):
+                out += [f"![Question {q['number']}]({q['image']})", ""]
+            else:
+                out += ["  \n".join(q["text"].split("\n")), ""]
             if view == "hardest" and q.get("reason"):
                 out += [f"*Why it's hard: {q['reason']}*", ""]
             if q.get("answer"):

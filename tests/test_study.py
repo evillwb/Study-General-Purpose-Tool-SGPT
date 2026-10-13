@@ -38,6 +38,16 @@ def test_each_study_tool(fake_ai):
     assert item["type"] == "error" and len(item["segments"]) == 4 and item["correction"] == "pelajaran"
     assert "**C → pelajaran**" in study.as_markdown(malay) or "B → pelajaran" in study.as_markdown(malay)
 
+    # Chinese measure words, explained in Malay: sentences in Chinese, explanations in Malay.
+    measure = study.generate(c, "grammar", [], {"test": "zh_measure", "count": 2, "language": "ms"})
+    item = measure["items"][0]
+    assert item["type"] == "mcq" and item["options"][0] == "本" and measure["tested_language"] == "zh"
+    writer = next(r for r in fake_ai[1].requests if "grammar test items" in r["messages"][0]["content"]
+                  and "量词" in r["messages"][1]["content"])
+    assert "correct Simplified Chinese" in writer["messages"][0]["content"]
+    assert "explanation\" (and nothing else) in Malay" in writer["messages"][0]["content"]
+    assert len([t for t in study.GRAMMAR_TESTS if t.startswith(("en_", "zh_", "ms_"))]) == 15
+
 
 def test_study_guide_uses_question_bank(fake_ai):
     c = _client(fake_ai[0])

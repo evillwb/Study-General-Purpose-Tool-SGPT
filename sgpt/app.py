@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -20,20 +22,22 @@ from urllib.parse import quote
 import markdown as md
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 
-from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
+from .generator import (DEFAULT_PLAN, EXAM_TEMPLATES, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
 from . import bank as qbank
-from . import convert, ocr, study
+from . import convert, figures, media, ocr, quizapps, study
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
-from .providers import (PROVIDERS, SEARCH_ENGINES, make_client, mask_key, resolve_base_url,
-                        resolve_key, save_provider_config, save_search_settings, search_settings)
+from .providers import (PROVIDERS, SEARCH_ENGINES, config_path, make_client, mask_key,
+                        resolve_base_url, resolve_key, save_provider_config, save_search_settings,
+                        search_settings)
 from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_files,
                       library_meta, load_file, load_library, save_library_meta)
 
 WEB_DIR = Path(__file__).parent / "web"
-LOCAL_JOBS = {"ocr", "convert"}  # don't use the AI, so they can run alongside an AI job
+CACHE_VERSION = 2  # bump when analysis or question-bank results change shape, to redo them
+LOCAL_JOBS = {"ocr", "convert", "media", "transcript"}  # don't use the AI, so they can run alongside an AI job
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()-]+")
 _EXAM_ID = re.compile(r"^[a-f0-9]{6,32}$")
 
@@ -46,10 +50,29 @@ def _safe_filename(name: str) -> str:
     return name
 
 
-def render_html(text: str) -> str:
+def render_html(text: str, figure_base: str = "") -> str:
+    """Markdown -> HTML for the app. Formulas ($...$) become pictures; diagram pictures are
+    served from figure_base (an exam's figure URL)."""
     # Escape raw HTML tags the model might emit; Markdown formatting is unaffected.
     text = re.sub(r"<(?=[A-Za-z/!])", "&lt;", text)
-    return md.markdown(convert.keep_box_lines(text), extensions=["extra", "sane_lists"])
+    formulas: list[str] = []
+
+    def keep(m):  # protect LaTeX from Markdown (underscores, backslashes)
+        formulas.append(m.group(1))
+        return f"\u2063MATH{len(formulas) - 1}\u2063"
+    text = figures.MATH.sub(keep, text)
+    if figure_base:
+        text = re.sub(r"\]\((diagram-\d+)\.png\)", lambda m: f"]({figure_base}{m.group(1)}.svg)", text)
+    else:
+        text = re.sub(r"!\[[^\]]*\]\(diagram-\d+\.png\)", "", text)
+    out = md.markdown(convert.keep_box_lines(text), extensions=["extra", "sane_lists"])
+    return re.sub("\u2063MATH(\\d+)\u2063", lambda m: math_tag(formulas[int(m.group(1))]), out)
+
+
+def math_tag(tex: str) -> str:
+    from html import escape
+    return (f'<img class="math" src="/api/math.svg?tex={quote(tex)}" alt="{escape(tex, quote=True)}">'
+            if figures.math_image(tex, "svg") else escape(figures.plain(tex)))
 
 
 class Job(Progress):
@@ -84,11 +107,21 @@ class Job(Progress):
     def cancel(self) -> None:
         self._cancel.set()
 
-    def as_dict(self) -> dict:
-        return {"id": self.id, "kind": self.kind, "state": self.state, "done": self.done,
-                "total": self.total, "message": self.message, "log": self.log,
-                "error": self.error, "exam_id": self.exam_id, "result": self.result,
-                "elapsed": round(time.time() - self.started)}
+    def eta(self) -> int | None:
+        """Seconds left, judged from the time the finished steps took (None until known)."""
+        elapsed = time.time() - self.started
+        if self.state != "running" or self.done <= 0 or self.total <= self.done or elapsed < 3:
+            return None
+        return round(elapsed / self.done * (self.total - self.done))
+
+    def as_dict(self, full: bool = True) -> dict:
+        data = {"id": self.id, "kind": self.kind, "state": self.state, "done": self.done,
+                "total": self.total, "message": self.message, "error": self.error,
+                "exam_id": self.exam_id, "elapsed": round(time.time() - self.started),
+                "eta": self.eta()}
+        if full:
+            data.update(log=self.log, result=self.result)
+        return data
 
 
 def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = None) -> Flask:
@@ -157,11 +190,19 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         engine, key = search_settings()
         return jsonify(
             ocr=ocr.available(),
+            media={"available": media.available(), "ffmpeg": bool(media.ffmpeg()),
+                   "qualities": [[q, media.QUALITY_LABELS[q]] for q in media.QUALITIES],
+                   "sites": media.SITES, "browsers": media.BROWSERS,
+                   "defaults": media.DEFAULTS},
             convert={"targets": convert.TARGETS, "libreoffice": bool(convert.libreoffice()),
+                     "office": sorted(convert.ms_office()),
                      "inputs": sorted(convert.INPUTS)},
             question_types=[{"id": k, "label": v["label"], "marks": v["marks"]}
                             for k, v in QUESTION_TYPES.items()],
             default_plan=DEFAULT_PLAN,
+            exam_templates=[{"id": k, "label": v["label"], "level": v["level"], "minutes": v["minutes"],
+                             "plan": [{"type": t, "count": n, "marks": m} for t, n, m in v["plan"]]}
+                            for k, v in EXAM_TEMPLATES.items()],
             difficulties=list(DIFFICULTY_TEXT),
             difficulty_mix=DIFFICULTY_MIX,
             languages=[{"id": k, "label": v["label"]} for k, v in LANGUAGES.items()],
@@ -216,11 +257,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         for path in library_files(library_dir):
             entry = meta.get(path.name, {})
             item = {"name": path.name, "type": path.suffix.lower().lstrip("."),
-                    "use": entry.get("use", True)}
+                    "use": entry.get("use", True), "language": entry.get("language", "auto")}
             try:
                 src = load_file(path, entry.get("role"))
                 item.update(role=src.kind, chars=len(src.text), readable=len(src.text) >= 200,
-                            ocr=src.ocr,
+                            ocr=src.ocr, detected=src.languages,
                             pages=src.paper.page_count if src.paper else None,
                             questions=len(src.paper.questions) if src.paper else None)
             except Exception as exc:  # a corrupt file should not break the whole list
@@ -249,6 +290,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             entry["role"] = data["role"]
         if "use" in data:
             entry["use"] = bool(data["use"])
+        if data.get("language") == "auto":
+            entry.pop("language", None)
+        elif data.get("language") in LANGUAGES:
+            entry["language"] = data["language"]
         save_library_meta(library_dir, meta)
         return jsonify(ok=True)
 
@@ -270,7 +315,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         return [s for s in load_library(library_dir, warn) if s.kind == "paper" and s.paper]
 
     def papers_key(papers) -> str:
-        parts = []
+        parts = [f"v{CACHE_VERSION}"]
         for s in sorted(papers, key=lambda s: s.title):
             stat = (library_dir / s.title).stat()
             parts.append(f"{s.title}|{stat.st_size}|{stat.st_mtime_ns}")
@@ -308,15 +353,16 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             papers = selected_papers(job.warn)
             if not papers:
                 raise RuntimeError("No past papers selected. Add a PDF and mark it as a past paper.")
-            result = analyse_papers(c, papers, progress=job)
+            result = analyse_papers(c, papers, progress=job, language=s.get("language") or "")
             data = save_analysis(papers, result, c.model)
             job.result = {k: v for k, v in data.items() if k != "key"}
-            job.step(len(papers), len(papers), "Done")
+            job.step(1, 1, "Done")
 
         return start_job(Job("analyse"), work)
 
     # --- Question bank (all past-year questions, by chapter and difficulty) -------------
     bank_file = library_dir / ".question_bank.json"
+    bank_images = library_dir / ".bank_images"  # a picture of each question, cut from its page
 
     def cached_bank(papers) -> dict | None:
         if not papers:
@@ -351,8 +397,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             if not papers:
                 raise RuntimeError("No past papers selected. Add PDFs and mark them as past papers.")
             analysis = (cached_analysis(papers) or {}).get("merged") or {}
+            shutil.rmtree(bank_images, ignore_errors=True)
             bank = qbank.build_bank(c, papers, subject=s.get("subject") or analysis.get("subject") or "",
-                                    topics=analysis.get("topics") or [], progress=job)
+                                    topics=analysis.get("topics") or [], progress=job,
+                                    image_dir=bank_images, language=s.get("language") or "")
             save_bank(papers, bank)
             job.result = bank
 
@@ -372,7 +420,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             bank = cached_bank(papers)
             if not bank:
                 raise RuntimeError("Build the question bank first.")
-            qbank.solve_bank_questions(c, bank, ids, s.get("language") or "en", progress=job)
+            qbank.solve_bank_questions(c, bank, ids, s.get("language") or "en", progress=job,
+                                       image_dir=bank_images)
             save_bank(papers, bank)
             job.result = public_bank(bank)
             job.step(1, 1, "Done")
@@ -386,9 +435,17 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             abort(404, "Build the question bank first")
         view = request.args.get("view", "chapters")
         per_chapter = max(1, min(int(request.args.get("n") or 10), 100))
-        text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter)
+        fmt = request.args.get("format", "md")
+        text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter,
+                                 pictures=fmt in ("pdf", "docx"))
         title = f"Hardest {per_chapter} questions per chapter" if view == "hardest" else "Questions by chapter"
-        return download(text, request.args.get("format", "md"), title)
+        return download(text, fmt, title, images_dir=bank_images)
+
+    @app.get("/api/bank/image/<name>")
+    def bank_image(name):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.png", name):
+            abort(404)
+        return send_from_directory(bank_images, name, max_age=3600)
 
     # --- Study tools (notes, flashcards, vocabulary, quiz, grammar) ---------------------
     study_dir = output_dir / "study"
@@ -499,10 +556,27 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
         return start_job(Job("ask"), work)
 
+    def quiz_app_download(fmt: str, title: str, mcq: list[dict], pairs) -> Response:
+        """Kahoot spreadsheet or Quizlet import text."""
+        slug = quote(re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" ._")[:60] or "quiz")
+        try:
+            if fmt == "kahoot":
+                data, _cut = quizapps.kahoot_xlsx(mcq, int(request.args.get("seconds") or 30))
+                return Response(data, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{slug}%20(Kahoot).xlsx"})
+            text = quizapps.quizlet_text(pairs())
+        except ValueError as exc:
+            abort(400, str(exc))
+        return Response(text, mimetype="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{slug}%20(Quizlet).txt"})
+
     @app.get("/api/study/<set_id>/export")
     def export_set(set_id):
         data = load_set(set_id)
         fmt = request.args.get("format", "md")
+        if fmt in ("kahoot", "quizlet"):
+            return quiz_app_download(fmt, data["title"], quizapps.mcq_from_study(data),
+                                     lambda: quizapps.pairs_from_study(data))
         if fmt == "csv":
             try:
                 text = study.as_csv(data)
@@ -535,7 +609,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         public = {k: v for k, v in exam.items() if k != "context"}
         return {**public,
                 "total_marks": sum(q["marks"] for q in exam["questions"]),
-                "html": {part: render_html(render_markdown(exam, part))
+                "html": {part: render_html(render_markdown(exam, part), f"/api/exams/{exam['id']}/figure/")
                          for part in ("paper", "answers", "scheme")}}
 
     @app.post("/api/generate")
@@ -551,6 +625,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             difficulty_mix=s.get("difficulty_mix") if isinstance(s.get("difficulty_mix"), dict) else None,
             challenge=max(-2, min(2, int(s.get("challenge") or 0))),
             verify=s.get("verify") is not False,
+            diagrams=s.get("diagrams") is not False,
             instructions=(s.get("instructions") or "").strip(),
             duration_minutes=int(s["minutes"]) if str(s.get("minutes") or "").strip() else None,
             seed=seed,
@@ -590,11 +665,17 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         job = running_job()
         return jsonify(job.as_dict() if job else None)
 
+    @app.get("/api/jobs/running")
+    def running_jobs():
+        """Everything still running, for the Stop buttons on every page."""
+        return jsonify([j.as_dict(full=False) for j in jobs.values() if j.state == "running"])
+
     # --- Downloads and the file converter --------------------------------------------
-    def download(markdown_text: str, fmt: str, title: str, suffix: str = "") -> Response:
+    def download(markdown_text: str, fmt: str, title: str, suffix: str = "",
+                 images_dir: Path | None = None) -> Response:
         if fmt not in ("md", "txt", "html", "pdf", "docx"):
             abort(400, "Unknown format")
-        data, mimetype = convert.export_markdown(markdown_text, fmt, title)
+        data, mimetype = convert.export_markdown(markdown_text, fmt, title, images_dir)
         slug = re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" ._")[:60] or "export"
         return Response(data, mimetype=mimetype, headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(slug + suffix)}.{fmt}"})
@@ -647,11 +728,17 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
                                 step=lambda n, total, name=src.name: job.note(
                                     f"{name}: OCR page {n} of {total}")))
                         else:
-                            results.append(convert.convert(src, target, out_dir))
+                            notes: list[str] = []
+                            results.append(convert.convert(
+                                src, target, out_dir, notes=notes, should_stop=job.cancelled,
+                                step=lambda n, total, name=src.name: job.note(
+                                    f"{name}: rebuilding page {n} of {total} with OCR")))
+                            for note in notes:
+                                job.warn(note)
                     except convert.ConvertError as exc:
                         job.warn(str(exc))
-            job.result = [{"name": r.name, "size": r.stat().st_size,
-                           "url": f"/api/converted/{job.id}/{quote(r.name)}"} for r in results]
+            job.result = [converted_info(r) for r in results]
+            shutil.rmtree(in_dir, ignore_errors=True)  # the uploaded originals aren't needed now
             job.step(1, 1, "Done")
             if not results:
                 raise RuntimeError("Nothing could be converted. " + " ".join(
@@ -659,14 +746,177 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
         return start_job(job, work)
 
-    @app.get("/api/converted/<job_id>/<path:name>")
-    def converted_file(job_id, name):
+    def converted_info(path: Path) -> dict:
+        job_id = path.parent.parent.name
+        return {"job": job_id, "name": path.name, "size": path.stat().st_size,
+                "created": path.stat().st_mtime, "url": f"/api/converted/{job_id}/{quote(path.name)}"}
+
+    def converted_path(job_id: str, name: str) -> Path:
         if not re.match(r"^[a-f0-9]{12}$", job_id):
             abort(404, "Not found")
         path = converted_dir / job_id / "out" / Path(name).name
         if not path.is_file():
             abort(404, "Not found")
+        return path
+
+    def busy_folders() -> set[str]:
+        return {j.id for j in jobs.values() if j.kind == "convert" and j.state == "running"}
+
+    @app.get("/api/converted")
+    def list_converted():
+        files = [p for p in converted_dir.glob("*/out/*") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify([converted_info(p) for p in files])
+
+    @app.get("/api/converted/<job_id>/<path:name>")
+    def converted_file(job_id, name):
+        path = converted_path(job_id, name)
         return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.delete("/api/converted/<job_id>/<path:name>")
+    def delete_converted(job_id, name):
+        path = converted_path(job_id, name)
+        path.unlink()
+        if not any(path.parent.iterdir()):
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
+        return jsonify(ok=True)
+
+    @app.delete("/api/converted")
+    def delete_all_converted():
+        busy = busy_folders()
+        removed = 0
+        for folder in converted_dir.glob("*"):
+            if folder.is_dir() and folder.name not in busy:
+                removed += sum(1 for p in folder.glob("out/*") if p.is_file())
+                shutil.rmtree(folder, ignore_errors=True)
+        return jsonify(ok=True, removed=removed)
+
+    @app.post("/api/data/delete-all")
+    def delete_all_data():
+        """Delete every file SGPT made or was given: uploads, exams, study sets, converted
+        files, question bank, analyses and caches. Optionally also settings and API keys."""
+        s = request.get_json(force=True) or {}
+        if s.get("confirm") != "DELETE":
+            abort(400, 'Type DELETE to confirm')
+        for job in jobs.values():
+            if job.state == "running":
+                job.cancel()
+        deadline = time.time() + 10
+        while any(j.state == "running" for j in jobs.values()) and time.time() < deadline:
+            time.sleep(0.2)
+        for folder in (library_dir, output_dir):
+            for item in folder.iterdir():
+                if item.name == ".gitkeep":
+                    continue
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+        (output_dir / "study").mkdir(exist_ok=True)
+        if s.get("settings"):
+            config_path().unlink(missing_ok=True)
+        jobs.clear()
+        return jsonify(ok=True)
+
+    # --- Video and audio downloader (yt-dlp, cobalt-style settings) ----------------------
+    downloads_dir = output_dir / "downloads"
+
+    def download_info(path: Path) -> dict:
+        job_id = path.parent.name
+        return {"job": job_id, "name": path.name, "size": path.stat().st_size,
+                "created": path.stat().st_mtime, "url": f"/api/downloads/{job_id}/{quote(path.name)}"}
+
+    def download_path(job_id: str, name: str) -> Path:
+        if not re.match(r"^[a-f0-9]{12}$", job_id):
+            abort(404, "Not found")
+        path = downloads_dir / job_id / Path(name).name
+        if not path.is_file():
+            abort(404, "Not found")
+        return path
+
+    def media_url(data: dict) -> str:
+        url = str(data.get("url") or "").strip()
+        if not re.match(r"^https?://\S+$", url):
+            abort(400, "Paste a link that starts with http:// or https://")
+        if not media.available():
+            abort(400, "The downloader is not installed: pip install yt-dlp imageio-ffmpeg")
+        return url
+
+    @app.post("/api/media/download")
+    def media_download():
+        data = request.get_json(force=True) or {}
+        url = media_url(data)
+        job = Job("media")
+        out = downloads_dir / job.id
+
+        def work(job: Job):
+            def progress(fraction, message, meta):
+                job.step(int(fraction * 1000), 1000, message)
+                job.result = {"meta": meta}
+            try:
+                got = media.download(url, data.get("settings") or {}, out, progress=progress,
+                                     should_stop=job.cancelled)
+            except media.MediaError as exc:
+                shutil.rmtree(out, ignore_errors=True)
+                raise RuntimeError(str(exc)) from None
+            except InterruptedError:
+                shutil.rmtree(out, ignore_errors=True)
+                raise
+            for leftover in out.iterdir():  # subtitle files etc. already embedded
+                if leftover != got["file"]:
+                    leftover.unlink(missing_ok=True)
+            job.result = {"meta": {k: v for k, v in got.items() if k != "file"}, "file": download_info(got["file"])}
+            job.step(1000, 1000, "Done")
+
+        return start_job(job, work)
+
+    @app.post("/api/media/transcript")
+    def media_transcript():
+        """Save a video's subtitles as a text file in the library, to use as a source."""
+        data = request.get_json(force=True) or {}
+        url = media_url(data)
+
+        def work(job: Job):
+            job.step(0, 1, "Getting the subtitles…")
+            try:
+                title, text = media.transcript(url, str(data.get("language") or "en"))
+            except media.MediaError as exc:
+                raise RuntimeError(str(exc)) from None
+            name = _SAFE_NAME.sub("_", f"{title} (subtitles).txt").strip(" .")[:150]
+            (library_dir / name).write_text(f"{title}\n{url}\n\n{text}\n", encoding="utf-8")
+            job.result = {"name": name, "chars": len(text)}
+            job.step(1, 1, "Done")
+
+        return start_job(Job("transcript"), work)
+
+    @app.get("/api/downloads")
+    def list_downloads():
+        files = [p for p in downloads_dir.glob("*/*") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify([download_info(p) for p in files])
+
+    @app.get("/api/downloads/<job_id>/<path:name>")
+    def downloaded_file(job_id, name):
+        path = download_path(job_id, name)
+        return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.delete("/api/downloads/<job_id>/<path:name>")
+    def delete_download(job_id, name):
+        path = download_path(job_id, name)
+        path.unlink()
+        if not any(path.parent.iterdir()):
+            path.parent.rmdir()
+        return jsonify(ok=True)
+
+    @app.delete("/api/downloads")
+    def delete_all_downloads():
+        busy = {j.id for j in jobs.values() if j.kind == "media" and j.state == "running"}
+        removed = 0
+        for folder in downloads_dir.glob("*"):
+            if folder.is_dir() and folder.name not in busy:
+                removed += sum(1 for p in folder.iterdir() if p.is_file())
+                shutil.rmtree(folder, ignore_errors=True)
+        return jsonify(ok=True, removed=removed)
 
     # --- OCR only ------------------------------------------------------------------------
     @app.post("/api/ocr")
@@ -777,10 +1027,41 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         exam = load_exam(exam_id)
         part = request.args.get("part", "all")
         fmt = request.args.get("format", "md")
+        if fmt in ("kahoot", "quizlet"):
+            return quiz_app_download(fmt, exam["title"], quizapps.mcq_from_exam(exam),
+                                     lambda: quizapps.pairs_from_exam(exam))
         if part not in ("all", "paper", "answers", "scheme"):
             abort(400, "Unknown part")
         suffix = {"all": "", "paper": "_paper", "answers": "_answers", "scheme": "_marking_scheme"}
-        return download(render_markdown(exam, part), fmt, exam["title"], suffix[part])
+        text = render_markdown(exam, part)
+        if fmt not in ("pdf", "docx"):  # no pictures: formulas as plain text, diagrams left out
+            text = figures.markdown_plain_math(re.sub(r"!\[[^\]]*\]\(diagram-\d+\.png\)\n?", "", text))
+            return download(text, fmt, exam["title"], suffix[part])
+        with tempfile.TemporaryDirectory() as tmp:
+            for q in exam["questions"]:
+                if q.get("diagram"):
+                    try:
+                        (Path(tmp) / f"diagram-{q['number']}.png").write_bytes(figures.diagram_image(q["diagram"]))
+                    except Exception:  # noqa: BLE001 - a diagram that can't be drawn is left out
+                        pass
+            text = figures.markdown_with_math_images(text, Path(tmp))
+            return download(text, fmt, exam["title"], suffix[part], images_dir=Path(tmp))
+
+    @app.get("/api/exams/<exam_id>/figure/diagram-<int:number>.svg")
+    def exam_diagram(exam_id, number):
+        exam = load_exam(exam_id)
+        q = next((q for q in exam["questions"] if q["number"] == number and q.get("diagram")), None)
+        if not q:
+            abort(404, "No diagram")
+        return Response(figures.diagram_image(q["diagram"], "svg"), mimetype="image/svg+xml",
+                        headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/math.svg")
+    def math_svg():
+        svg = figures.math_image(request.args.get("tex", "")[:300], "svg")
+        if not svg:
+            abort(404, "Can't draw this formula")
+        return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
 
     @app.delete("/api/exams/<exam_id>")
     def delete_exam(exam_id):

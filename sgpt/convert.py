@@ -1,8 +1,13 @@
 """Convert documents between common formats, and export Markdown/text to Word, PDF or HTML.
 
-Works with no extra software for PDF, Word (.docx), images, Markdown, text and HTML.
-Older Office files (.doc, .rtf, .odt, PowerPoint, Excel) and the best-looking Word → PDF
-conversion use LibreOffice when it is installed (free: https://www.libreoffice.org).
+Conversions keep the original look where they can:
+
+- Word, PowerPoint and Excel -> PDF use Microsoft Office when it is installed (Windows),
+  otherwise LibreOffice (free: https://www.libreoffice.org). Without either, Word files
+  are laid out from their content (headings, tables, pictures), which is close but not exact.
+- PDF -> Word keeps the page layout (pdf2docx).
+- Scanned PDFs and photos -> Word are rebuilt page by page: text where it was, at its
+  size, and diagrams cut out of the scan (see layout.py).
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ import html as html_lib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from pathlib import Path
@@ -50,9 +56,96 @@ class ConvertError(RuntimeError):
 
 def targets_for(suffix: str) -> list[str]:
     suffix = suffix.lower()
-    if suffix not in INPUTS or (suffix in OFFICE and not libreoffice()):
-        return []  # old Office, PowerPoint and Excel files need LibreOffice
+    if suffix not in INPUTS:
+        return []
+    if suffix in OFFICE and not libreoffice():
+        # Old Word files, PowerPoint and Excel need Microsoft Office or LibreOffice.
+        app = _OFFICE_APP.get(suffix)
+        if not (app and app in ms_office()):
+            return []
+        return ["pdf", "docx"] if app == "Word" else ["pdf", "png"]
     return [t for t in TARGETS if not (suffix in PDF and t == "pdf")]
+
+
+# --- Microsoft Office (Windows): exact conversions with the real program ----------------
+_OFFICE_APP = {".doc": "Word", ".docx": "Word", ".rtf": "Word", ".odt": "Word",
+               ".ppt": "PowerPoint", ".pptx": "PowerPoint", ".odp": "PowerPoint",
+               ".xls": "Excel", ".xlsx": "Excel", ".ods": "Excel"}
+
+
+def ms_office() -> set[str]:
+    """Which Microsoft Office programs can be driven on this computer (Windows only)."""
+    if sys.platform != "win32":
+        return set()
+    try:
+        import win32com.client  # noqa: F401  (pywin32)
+        import winreg
+    except ImportError:
+        return set()
+    found = set()
+    for app in ("Word", "PowerPoint", "Excel"):
+        try:
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, f"{app}.Application"))
+            found.add(app)
+        except OSError:
+            pass
+    return found
+
+
+def _ms_office_convert(src: Path, fmt: str, out: Path) -> Path | None:
+    """Convert with Microsoft Office itself. None if Office isn't there or it fails."""
+    app_name = _OFFICE_APP.get(src.suffix.lower())
+    if not app_name or app_name not in ms_office() or (fmt != "pdf" and app_name != "Word"):
+        return None
+    import pythoncom
+    import win32com.client
+
+    source, target = str(src.resolve()), str(out.resolve())
+    pythoncom.CoInitialize()  # this runs in a background thread
+    app = None
+    try:
+        app = win32com.client.DispatchEx(f"{app_name}.Application")
+        if app_name == "Word":
+            app.Visible, app.DisplayAlerts = False, 0
+            doc = app.Documents.Open(source, ReadOnly=True, AddToRecentFiles=False, Visible=False)
+            try:
+                doc.SaveAs2(target, FileFormat=17 if fmt == "pdf" else 16)  # 17 PDF, 16 .docx
+            finally:
+                doc.Close(False)
+        elif app_name == "PowerPoint":
+            pres = app.Presentations.Open(source, ReadOnly=True, Untitled=False, WithWindow=False)
+            try:
+                pres.SaveAs(target, 32)  # 32 = PDF
+            finally:
+                pres.Close()
+        else:
+            app.Visible, app.DisplayAlerts = False, False
+            book = app.Workbooks.Open(source, ReadOnly=True)
+            try:
+                book.ExportAsFixedFormat(0, target)  # 0 = PDF
+            finally:
+                book.Close(False)
+    except Exception:  # noqa: BLE001 - any Office automation error: try the next way
+        return None
+    finally:
+        if app is not None:
+            try:
+                app.Quit()
+            except Exception:  # noqa: BLE001
+                pass
+        pythoncom.CoUninitialize()
+    return out if out.exists() else None
+
+
+def _office_convert(src: Path, fmt: str, out: Path) -> Path | None:
+    """Microsoft Office, then LibreOffice. None when neither is installed."""
+    done = _ms_office_convert(src, fmt, out)
+    if done:
+        return done
+    if libreoffice():
+        converted = _lo_convert(src, fmt, out.parent)
+        return converted if converted == out else Path(shutil.move(converted, out))
+    return None
 
 
 # --- Building blocks --------------------------------------------------------------------
@@ -105,13 +198,37 @@ def markdown_to_html(text: str, title: str = "") -> str:
             f"</title><style>{PAGE_CSS}</style></head><body>{body}</body></html>")
 
 
-def html_to_pdf(page_html: str, out: Path, header: str = "") -> Path:
+_IMG = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>', re.IGNORECASE)
+_MD_IMG = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)\)$")
+MAX_IMAGE_WIDTH = 480  # points: the A4 text width used below
+
+
+def _sized_images(html: str, images_dir: Path) -> str:
+    """Give each <img> its print size (pictures are rendered at 2x), at most the text width."""
+    import pymupdf
+
+    def size(match):
+        try:
+            with pymupdf.open(images_dir / match.group(1)) as img:
+                width = img[0].rect.width
+        except (RuntimeError, OSError, IndexError):
+            return match.group(0)
+        return f'<img src="{match.group(1)}" width="{min(width / 2, MAX_IMAGE_WIDTH):.0f}">'
+    return _IMG.sub(size, html)
+
+
+def html_to_pdf(page_html: str, out: Path, header: str = "", images_dir: Path | None = None) -> Path:
     """Lay out HTML on A4 pages; with a header, every page after the first gets a running
-    header and all pages a centred page number, like a printed handout."""
+    header and all pages a centred page number, like a printed handout. Images are read
+    from images_dir."""
     import pymupdf
 
     body = re.search(r"<body[^>]*>(.*)</body>", page_html, re.DOTALL | re.IGNORECASE)
-    story = pymupdf.Story(html=body.group(1) if body else page_html, user_css=PAGE_CSS)
+    html = body.group(1) if body else page_html
+    if images_dir:
+        html = _sized_images(html, images_dir)
+    story = pymupdf.Story(html=html, user_css=PAGE_CSS,
+                          archive=pymupdf.Archive(str(images_dir)) if images_dir else None)
     writer = pymupdf.DocumentWriter(str(out))
     page = pymupdf.paper_rect("a4")
     more = True
@@ -139,14 +256,27 @@ def html_to_pdf(page_html: str, out: Path, header: str = "") -> Path:
     return out
 
 
-_INLINE = re.compile(r"(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)")
+_INLINE = re.compile(r"(!\[[^\]]*\]\([^)\s]+\)|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)")
+_INLINE_IMG = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)\)$")
 
 
-def _add_runs(paragraph, text: str) -> None:
+def _add_runs(paragraph, text: str, images_dir: Path | None = None) -> None:
     for piece in _INLINE.split(text):
         if not piece:
             continue
-        if piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
+        picture = _INLINE_IMG.match(piece)
+        if picture:  # a formula drawn as a picture, inside the line
+            path = images_dir / picture.group(2) if images_dir else None
+            if path and path.is_file():
+                import pymupdf
+                from docx.shared import Pt
+
+                with pymupdf.open(path) as img:
+                    height = img[0].rect.height / 2
+                paragraph.add_run().add_picture(str(path), height=Pt(min(height, 60)))
+            else:
+                paragraph.add_run(picture.group(1))
+        elif piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
             paragraph.add_run(piece[2:-2]).bold = True
         elif piece.startswith("`") and piece.endswith("`"):
             paragraph.add_run(piece[1:-1]).font.name = "Consolas"
@@ -156,9 +286,11 @@ def _add_runs(paragraph, text: str) -> None:
             paragraph.add_run(piece)
 
 
-def markdown_to_docx(text: str, out: Path, title: str = "") -> Path:
-    """Write Markdown (headings, lists, quotes, tables, bold/italic) as a Word document."""
+def markdown_to_docx(text: str, out: Path, title: str = "", images_dir: Path | None = None) -> Path:
+    """Write Markdown (headings, lists, quotes, tables, bold/italic, pictures on their own
+    line) as a Word document."""
     import docx
+    from docx.shared import Pt
 
     doc = docx.Document()
     if title:
@@ -181,19 +313,29 @@ def markdown_to_docx(text: str, out: Path, title: str = "") -> Path:
             table.style = "Table Grid"
             for r, row in enumerate(rows):
                 for c, cell in enumerate(row):
-                    _add_runs(table.cell(r, c).paragraphs[0], cell)
+                    _add_runs(table.cell(r, c).paragraphs[0], cell, images_dir)
+            continue
+        picture = _MD_IMG.match(stripped)
+        if picture and images_dir and (images_dir / picture.group(2)).is_file():
+            import pymupdf
+
+            path = images_dir / picture.group(2)
+            with pymupdf.open(path) as img:
+                width = img[0].rect.width / 2
+            doc.add_picture(str(path), width=Pt(min(width, 450)))
+            i += 1
             continue
         heading = re.match(r"^(#{1,6})\s+(.*)", stripped)
         if heading:
             level = min(len(heading.group(1)), 4)
             doc.add_heading(re.sub(r"\*\*(.+?)\*\*", r"\1", heading.group(2)), level=level - 1 if level > 1 else 0)
         elif re.match(r"^[-*+]\s+", stripped):
-            _add_runs(doc.add_paragraph(style="List Bullet"), re.sub(r"^[-*+]\s+", "", stripped))
+            _add_runs(doc.add_paragraph(style="List Bullet"), re.sub(r"^[-*+]\s+", "", stripped), images_dir)
         elif re.match(r"^\d+[.)]\s+", stripped):
-            _add_runs(doc.add_paragraph(style="List Number"), re.sub(r"^\d+[.)]\s+", "", stripped))
+            _add_runs(doc.add_paragraph(style="List Number"), re.sub(r"^\d+[.)]\s+", "", stripped), images_dir)
         elif stripped.startswith(">"):
             p = doc.add_paragraph(style="Quote")
-            _add_runs(p, stripped.lstrip("> "))
+            _add_runs(p, stripped.lstrip("> "), images_dir)
         else:
             # Join hard-wrapped lines ("  " at the end) into one paragraph with line breaks.
             p = doc.add_paragraph()
@@ -205,7 +347,7 @@ def markdown_to_docx(text: str, out: Path, title: str = "") -> Path:
             for n, part in enumerate(parts):
                 if n:
                     p.add_run().add_break()
-                _add_runs(p, part)
+                _add_runs(p, part, images_dir)
         i += 1
     doc.save(out)
     return out
@@ -246,6 +388,26 @@ def docx_to_markdown(path: Path) -> str:
     return "\n".join(out).strip() + "\n"
 
 
+def docx_to_html(src: Path, images_dir: Path) -> str:
+    """Word -> HTML keeping headings, lists, tables, bold/italic and pictures (saved in
+    images_dir). Used for Word -> PDF when neither Office nor LibreOffice is installed."""
+    import mammoth
+
+    counter = [0]
+
+    def save_image(image):
+        counter[0] += 1
+        name = f"img{counter[0]}.{(image.content_type or 'image/png').split('/')[-1].replace('jpeg', 'jpg')}"
+        with image.open() as data:
+            (images_dir / name).write_bytes(data.read())
+        return {"src": name}
+
+    with open(src, "rb") as f:
+        result = mammoth.convert_to_html(f, convert_image=mammoth.images.img_element(save_image))
+    return (f"<!doctype html><html><head><meta charset='utf-8'><style>{PAGE_CSS}</style></head>"
+            f"<body>{result.value}</body></html>")
+
+
 def text_as_markdown(src: Path) -> str:
     """Readable Markdown for any supported input (OCR for images and scanned PDFs)."""
     s = src.suffix.lower()
@@ -276,7 +438,11 @@ def text_as_markdown(src: Path) -> str:
         return "\n\n".join(f"## Page {p['page']}\n\n{p['text'].strip()}" for p in pages) + "\n"
     if s in OFFICE:
         with tempfile.TemporaryDirectory() as tmp:
-            return docx_to_markdown(_lo_convert(src, "docx", Path(tmp)))
+            done = _office_convert(src, "docx", Path(tmp) / "doc.docx")
+            if not done:
+                raise ConvertError(f"Reading {s} files needs Microsoft Office or LibreOffice (free): "
+                                   "https://www.libreoffice.org/download/")
+            return docx_to_markdown(done)
     raise ConvertError(f"{src.name}: unsupported file type")
 
 
@@ -361,8 +527,14 @@ def searchable_pdf(src: Path, out: Path, *, step=None, should_stop=None, dpi: in
 
 # --- Main entry points ------------------------------------------------------------------
 
-def convert(src: Path, target: str, out_dir: Path) -> Path:
-    """Convert one file. Returns the path of the new file in out_dir."""
+def convert(src: Path, target: str, out_dir: Path, *, notes: list[str] | None = None,
+            step=None, should_stop=None) -> Path:
+    """Convert one file, keeping its look where possible. Returns the new file in out_dir.
+
+    notes collects remarks for the user (e.g. when a layout could only be approximated);
+    step(n, total) and should_stop() report progress and allow stopping during OCR.
+    """
+    notes = notes if notes is not None else []
     s = src.suffix.lower()
     if s not in INPUTS:
         raise ConvertError(f"{src.name}: unsupported file type")
@@ -377,9 +549,18 @@ def convert(src: Path, target: str, out_dir: Path) -> Path:
             return Path(shutil.copy(src, out))
         if s in IMAGES:
             return images_to_pdf([src], out)
-        if s in WORD | OFFICE and libreoffice():
-            converted = _lo_convert(src, "pdf", out_dir)
-            return converted if converted == out else Path(shutil.move(converted, out))
+        if s in WORD | OFFICE:
+            done = _office_convert(src, "pdf", out)
+            if done:
+                return done
+            if s in OFFICE:
+                raise ConvertError(f"Converting {s} files needs Microsoft Office or LibreOffice (free): "
+                                   "https://www.libreoffice.org/download/")
+            with tempfile.TemporaryDirectory() as tmp:
+                html_to_pdf(docx_to_html(src, Path(tmp)), out, images_dir=Path(tmp))
+            notes.append(f"{src.name}: laid out without Word or LibreOffice, so fonts and page "
+                         "breaks may differ. Install LibreOffice (free) for an exact copy.")
+            return out
         if s in HTML:
             return html_to_pdf(src.read_text(encoding="utf-8", errors="replace"), out)
         return html_to_pdf(markdown_to_html(text_as_markdown(src), src.stem), out)
@@ -387,21 +568,13 @@ def convert(src: Path, target: str, out_dir: Path) -> Path:
         if s in WORD:
             return Path(shutil.copy(src, out))
         if s in OFFICE:
-            converted = _lo_convert(src, "docx", out_dir)
-            return converted if converted == out else Path(shutil.move(converted, out))
-        if s in PDF:
-            try:
-                from pdf2docx import Converter
-            except ImportError:
-                Converter = None
-            has_text = _pdf_has_text(src)
-            if Converter and has_text:
-                conv = Converter(str(src))
-                try:
-                    conv.convert(str(out))
-                finally:
-                    conv.close()
-                return out
+            done = _office_convert(src, "docx", out)
+            if not done:
+                raise ConvertError(f"Converting {s} files needs Microsoft Office or LibreOffice (free): "
+                                   "https://www.libreoffice.org/download/")
+            return done
+        if s in PDF | IMAGES:
+            return pdf_to_docx(src, out, notes=notes, step=step, should_stop=should_stop)
         return markdown_to_docx(text_as_markdown(src), out, src.stem)
     if target in ("txt", "md"):
         text = text_as_markdown(src)
@@ -415,19 +588,55 @@ def convert(src: Path, target: str, out_dir: Path) -> Path:
         out.write_text(markdown_to_html(text_as_markdown(src), src.stem), encoding="utf-8")
         return out
     # png
-    pdf = src if s in PDF else convert(src, "pdf", out_dir)
+    pdf = src if s in PDF else convert(src, "pdf", out_dir, notes=notes)
     return pdf_to_images(pdf, out)
 
 
-def _pdf_has_text(path: Path) -> bool:
+def pdf_to_docx(src: Path, out: Path, *, notes: list[str] | None = None, step=None,
+                should_stop=None) -> Path:
+    """PDF or image -> Word with the same layout. Scanned pages are first rebuilt with
+    their text in place (OCR), so the Word file is editable and looks like the original."""
+    from . import ocr
+
+    notes = notes if notes is not None else []
+    try:
+        from pdf2docx import Converter
+    except ImportError:
+        Converter = None
+    with tempfile.TemporaryDirectory() as tmp:
+        pdf = src
+        scanned = src.suffix.lower() in IMAGES or not _pdf_has_text(src, every_page=True)
+        if scanned and ocr.available():
+            from .layout import layout_pdf
+
+            pdf = layout_pdf(src, Path(tmp) / "layout.pdf", step=step, should_stop=should_stop)
+        elif src.suffix.lower() in IMAGES:
+            pdf = images_to_pdf([src], Path(tmp) / "image.pdf")
+        if Converter is None:
+            notes.append("pdf2docx is not installed, so only the text was kept.")
+            return markdown_to_docx(text_as_markdown(src), out, src.stem)
+        conv = Converter(str(pdf))
+        try:
+            conv.convert(str(out))
+        finally:
+            conv.close()
+    return out
+
+
+def _pdf_has_text(path: Path, every_page: bool = False) -> bool:
+    """Whether the PDF has selectable text (on every page that has an image, if every_page)."""
     import pymupdf
 
     with pymupdf.open(path) as doc:
+        if every_page:
+            return all(len(p.get_text().strip()) >= 25 or not p.get_images() for p in doc)
         return sum(len(p.get_text().strip()) for p in doc) > 50 * max(len(doc), 1) * 0.2
 
 
-def export_markdown(text: str, fmt: str, title: str = "") -> tuple[bytes, str]:
-    """Markdown -> (file bytes, media type) for downloads."""
+def export_markdown(text: str, fmt: str, title: str = "",
+                    images_dir: Path | None = None) -> tuple[bytes, str]:
+    """Markdown -> (file bytes, media type) for downloads. Pictures (![..](name)) are read
+    from images_dir for PDF and Word."""
     if fmt == "md":
         return text.encode("utf-8"), "text/markdown"
     if fmt == "txt":
@@ -438,10 +647,10 @@ def export_markdown(text: str, fmt: str, title: str = "") -> tuple[bytes, str]:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / f"export.{fmt}"
         if fmt == "pdf":
-            html_to_pdf(markdown_to_html(text, title), out, header=title)
+            html_to_pdf(markdown_to_html(text, title), out, header=title, images_dir=images_dir)
             return out.read_bytes(), "application/pdf"
         if fmt == "docx":
-            markdown_to_docx(text, out, title)
+            markdown_to_docx(text, out, title, images_dir)
             return out.read_bytes(), ("application/vnd.openxmlformats-officedocument."
                                       "wordprocessingml.document")
     raise ConvertError(f"Unknown export format: {fmt}")

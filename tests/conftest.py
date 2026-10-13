@@ -66,6 +66,18 @@ def fake_reply(system: str, prompt: str) -> str:
             {"n": it["n"], "ok": it["n"] != 2,
              "answer": (1 if isinstance(it.get("answer"), int) else "fixed") if it["n"] == 1 else it.get("answer")}
             for it in items]})
+    if "grammar test items" in system:
+        n = int(re.search(r"Write (\d+)", prompt).group(1))
+        if '"segments"' in prompt:
+            return json.dumps({"items": [{"segments": ["Para pelajar", "sedang", "pelajaran-pelajaran", "itu."],
+                                          "error_index": 2, "correction": "pelajaran", "explanation": "jamak"}
+                                         for _ in range(n)]})
+        if '"options"' in prompt:
+            return json.dumps({"items": [{"question": f"这是一_____书 {i}。", "options": ["本", "张", "条", "只"],
+                                          "answer": 0, "explanation": "books take 本"} for i in range(n)]},
+                              ensure_ascii=False)
+        return json.dumps({"items": [{"sentence": f"She _____ (go) home {i}.", "base": "go",
+                                      "answer": "went", "explanation": "past"} for i in range(n)]})
     if "expert teacher" in system or "exam study guides" in system:
         n = int((re.search(r"(?:Make|Write) (\d+)", prompt) or re.search(r"Tulis (\d+)", prompt) or [0, 3])[1])
         if "flashcards" in prompt:
@@ -73,13 +85,6 @@ def fake_reply(system: str, prompt: str) -> str:
         if "multiple-choice" in prompt:
             return json.dumps({"questions": [{"question": f"Q{i}?", "options": ["a", "b", "c", "d"],
                                               "answer": 2, "explanation": "because"} for i in range(n)]})
-        if "TENSES" in prompt or "WORD FORM" in prompt:
-            return json.dumps({"items": [{"sentence": f"She _____ (go) home {i}.", "base": "go",
-                                          "answer": "went", "explanation": "past"} for i in range(n)]})
-        if "KENAL PASTI" in prompt:
-            return json.dumps({"items": [{"segments": ["Para pelajar", "sedang", "pelajaran-pelajaran", "itu."],
-                                          "error_index": 2, "correction": "pelajaran", "explanation": "jamak"}
-                                         for _ in range(n)]})
         if prompt.startswith("Explain"):
             words = re.search(r"these words: (.*?)\. Level", prompt)
             names = words.group(1).split(", ") if words else ["photosynthesis", "chlorophyll"]
@@ -96,6 +101,13 @@ def fake_reply(system: str, prompt: str) -> str:
         if "Answer the student's question" in prompt:
             return "Chlorophyll absorbs **light**."
         return "# Photosynthesis\n\n## Key terms\n\n| Term | Definition | Example |\n|---|---|---|\n| Glucose | sugar | — |\n\n- Light → glucose"
+    if "translate exam papers" in system:
+        items = json.loads(prompt.split("ITEMS:\n", 1)[1].split("\n\nReply with JSON")[0])
+        for it in items:
+            it["question"] = "（译）" + it["question"] + " 求解。"
+            if it.get("answer"):
+                it["answer"] = "（译）" + it["answer"] + " 答案。"
+        return json.dumps({"items": items}, ensure_ascii=False)
     if "knows the syllabus" in system:
         return json.dumps({"chapters": ["Algebra", "Geometry"]})
     if "sorting past exam questions" in system:
@@ -131,10 +143,19 @@ def fake_reply(system: str, prompt: str) -> str:
     return "OK"
 
 
+def _text_of(content) -> str:
+    """The text of a message whose content may be a list of text and image parts."""
+    if isinstance(content, list):
+        return "\n".join(p.get("text", "") for p in content if p.get("type") == "text")
+    return content
+
+
 class _FakeAI(BaseHTTPRequestHandler):
     """Speaks just enough of the Ollama, OpenAI and Anthropic APIs for the tests."""
     requests: list = []
     reject_temperature = False
+    vision = False  # whether the fake Ollama model says it can read images
+    busy = 0  # answer this many chat requests with "503 high demand" first
 
     def log_message(self, *args):
         pass
@@ -163,6 +184,8 @@ class _FakeAI(BaseHTTPRequestHandler):
 
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/api/show":
+            return self._send({"capabilities": ["completion"] + (["vision"] if type(self).vision else [])})
         type(self).requests.append({"path": self.path, "headers": dict(self.headers), **payload})
         if self.path == "/api/chat":  # Ollama
             msgs = payload["messages"]
@@ -171,16 +194,20 @@ class _FakeAI(BaseHTTPRequestHandler):
                      for i in range(0, len(reply), 20)] + [{"message": {"content": ""}, "done": True}]
             return self._send("\n".join(json.dumps(x) for x in lines).encode())
         if self.path == "/v1/chat/completions":  # OpenAI-compatible
+            if type(self).busy > 0:
+                type(self).busy -= 1
+                return self._send({"error": {"code": 503, "status": "UNAVAILABLE", "message":
+                                             "This model is currently experiencing high demand."}}, 503)
             if type(self).reject_temperature and "temperature" in payload:
                 return self._send({"error": {"message": "Unsupported parameter: 'temperature'"}}, 400)
             msgs = payload["messages"]
-            reply = fake_reply(msgs[0]["content"], msgs[1]["content"])
+            reply = fake_reply(msgs[0]["content"], _text_of(msgs[1]["content"]))
             events = [{"choices": [{"delta": {"content": reply[i:i + 20]}}]}
                       for i in range(0, len(reply), 20)]
             body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
             return self._send(body.encode(), ctype="text/event-stream")
         if self.path.startswith("/v1/messages"):  # Anthropic
-            reply = fake_reply(payload.get("system", ""), payload["messages"][0]["content"])
+            reply = fake_reply(payload.get("system", ""), _text_of(payload["messages"][0]["content"]))
             events = [
                 ("message_start", {"type": "message_start", "message": {
                     "id": "msg_1", "type": "message", "role": "assistant", "model": payload["model"],
@@ -206,6 +233,8 @@ class _FakeAI(BaseHTTPRequestHandler):
 def fake_ai():
     _FakeAI.requests = []
     _FakeAI.reject_temperature = False
+    _FakeAI.vision = False
+    _FakeAI.busy = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAI)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}", _FakeAI

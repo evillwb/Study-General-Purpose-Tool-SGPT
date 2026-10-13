@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 
-from .i18n import LANGUAGES
+from .i18n import LANGUAGES, languages_in
 from .pdf_extract import ExamPaper, extract_paper, needs_ocr_but_unavailable, split_questions
 
 USER_AGENT = "Mozilla/5.0 (compatible; SGPT/1.0; +https://github.com/evillwb/Easy-Note-AI---Project)"
@@ -36,6 +36,13 @@ class Source:
     url: str = ""
     paper: ExamPaper | None = field(default=None, repr=False)
     ocr: bool = False
+    # Languages the text is in, main one first (["zh", "en"] for a bilingual paper). Set
+    # by the user per file, or detected.
+    languages: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if not self.languages:
+            self.languages = languages_in(self.text)
 
     def citation(self) -> dict:
         return {"kind": self.kind, "title": self.title, "url": self.url}
@@ -288,8 +295,19 @@ def load_library(folder: Path, warn=print, only_selected: bool = True) -> list[S
         if len(source.text) < 200:
             warn(f"{path.name}: little or no text found - skipped")
             continue
+        if entry.get("language") in LANGUAGES:
+            source.languages = [entry["language"]]
         sources.append(source)
     return sources
+
+
+def source_languages(sources: list[Source]) -> list[str]:
+    """Every language the sources are in, most common first."""
+    counts: dict[str, int] = {}
+    for s in sources:
+        for code in s.languages:
+            counts[code] = counts.get(code, 0) + len(s.text)
+    return sorted(counts, key=counts.get, reverse=True)
 
 
 def gather_sources(*, folder: Path | None = None, text: str = "", urls: list[str] = (),

@@ -13,7 +13,13 @@ from datetime import datetime
 from . import i18n
 from .generator import NOTES_LIMIT, Progress, _as_int, _chunks, _text, summarise_source
 from .ollama_client import parse_json
-from .sources import Source
+from .sources import Source, source_languages
+
+
+def _rule(o: dict) -> str:
+    """Write in the chosen language; the sources may be in others."""
+    return i18n.write_rule(o.get("language", "en"), o.get("source_languages"))
+
 
 KINDS = {"notes": "Notes", "flashcards": "Flashcards", "vocab": "Vocabulary",
          "quiz": "MCQ quiz", "grammar": "Grammar test"}
@@ -44,10 +50,70 @@ NOTE_STYLE_LABELS = {
     "outline": "Outline", "mindmap": "Mind map", "key_terms": "Key terms glossary",
 }
 NOTE_LENGTH = {"short": "about 300 words", "medium": "about 700 words", "long": "about 1500 words"}
-GRAMMAR_TESTS = {
-    "en_tenses": "English tenses",
-    "en_word_form": "English word form",
-    "ms_error": "Malay error identification (Kesalahan bahasa)",
+# Grammar tests: id -> (label, language tested, item kind, what to write).
+# Kinds: "fill" (type the missing word), "error" (pick the wrong part of 4), "mcq" (choose).
+_GRAMMAR = {
+    "en_tenses": ("English · Tenses", "en", "fill",
+                  "verb TENSES. Each sentence has a gap \"_____\" with the base verb in brackets right "
+                  "after it, e.g. \"Yesterday she _____ (go) to the market.\" Mix present, past and future; "
+                  "simple, continuous and perfect; and passive where suitable"),
+    "en_word_form": ("English · Word form", "en", "fill",
+                     "WORD FORMS. Each sentence has a gap \"_____\" and the root word in capitals in brackets "
+                     "at the end, e.g. \"The scenery was _____. (BEAUTY)\". The student changes the root into "
+                     "the right form (noun, verb, adjective, adverb, negative prefix, plural…)"),
+    "en_error": ("English · Error identification", "en", "error",
+                 "ERROR IDENTIFICATION. Each sentence is split into exactly 4 parts (A–D); exactly one part "
+                 "has a grammar error (tense, agreement, preposition, article, word form, pronoun…)"),
+    "en_prepositions": ("English · Prepositions", "en", "mcq",
+                        "PREPOSITIONS. Each sentence has a gap \"_____\" and 4 preposition options; exactly "
+                        "one is correct"),
+    "en_agreement": ("English · Subject–verb agreement", "en", "mcq",
+                     "SUBJECT–VERB AGREEMENT. Each sentence has a gap \"_____\" and 4 verb options "
+                     "(e.g. is / are / was / were); exactly one is correct, including tricky subjects "
+                     "(each, neither…nor, collective nouns, a number of…)"),
+    "zh_sick": ("中文 · 病句辨析", "zh", "mcq",
+                "病句辨析. Each item asks \"下列句子中，没有语病的一项是\" (or \"有语病的一项是\"), with 4 "
+                "sentences as the options; exactly one fits. Errors: 搭配不当, 成分残缺或赘余, 语序不当, "
+                "前后矛盾, 不合逻辑"),
+    "zh_typos": ("中文 · 错别字", "zh", "error",
+                 "错别字. Each sentence is split into exactly 4 parts (A–D); exactly one part contains a "
+                 "wrongly written character (同音字 or 形近字). The correction is the right word"),
+    "zh_measure": ("中文 · 量词", "zh", "mcq",
+                   "量词. Each sentence has a gap \"_____\" where a measure word goes, and 4 measure-word "
+                   "options; exactly one is correct"),
+    "zh_connectives": ("中文 · 关联词", "zh", "mcq",
+                       "关联词. Each sentence has one or two gaps \"_____\" for conjunctions (因为…所以, 虽然…但是, "
+                       "不但…而且, 即使…也, 只要…就…), and 4 options; exactly one is correct"),
+    "zh_idioms": ("中文 · 成语运用", "zh", "mcq",
+                  "成语运用. Each sentence has a gap \"_____\" for an idiom (成语), and 4 idiom options; "
+                  "exactly one fits the meaning and context"),
+    "ms_error": ("Melayu · Kesalahan bahasa", "ms", "error",
+                 "KENAL PASTI KESALAHAN (SPM style). Each sentence is split into exactly 4 parts (A–D); "
+                 "exactly one part has an error (ejaan, imbuhan, kata sendi nama, penjodoh bilangan, kata "
+                 "ganda, struktur ayat, istilah)"),
+    "ms_affixes": ("Melayu · Imbuhan", "ms", "fill",
+                   "IMBUHAN. Each sentence has a gap \"_____\" with the kata dasar in brackets right after "
+                   "it, e.g. \"Dia _____ (ajar) adiknya membaca.\" The student writes the correct form with "
+                   "awalan, akhiran, apitan or sisipan"),
+    "ms_measure": ("Melayu · Penjodoh bilangan", "ms", "mcq",
+                   "PENJODOH BILANGAN. Each sentence has a gap \"_____\" for a penjodoh bilangan (sebuah, "
+                   "seekor, sebatang, sekuntum, seutas…) and 4 options; exactly one is correct"),
+    "ms_prepositions": ("Melayu · Kata sendi nama", "ms", "mcq",
+                        "KATA SENDI NAMA. Each sentence has a gap \"_____\" and 4 options (di, ke, dari, "
+                        "daripada, pada, kepada, untuk, bagi, akan…); exactly one is correct"),
+    "ms_proverbs": ("Melayu · Peribahasa", "ms", "mcq",
+                    "PERIBAHASA. Each item describes a situation and asks which peribahasa fits best, with "
+                    "4 peribahasa as the options; exactly one is correct"),
+}
+GRAMMAR_TESTS = {test: label for test, (label, *_rest) in _GRAMMAR.items()}
+
+_GRAMMAR_SHAPES = {
+    "fill": '{"items": [{"sentence": "... _____ ...", "base": "word in brackets", "answer": "...", '
+            '"alternatives": ["other correct answers"], "explanation": "..."}]}',
+    "error": '{"items": [{"segments": ["part A", "part B", "part C", "part D"], "error_index": 2, '
+             '"correction": "the corrected part", "explanation": "..."}]}',
+    "mcq": '{"items": [{"question": "the sentence with _____, or the question", '
+           '"options": ["...", "...", "...", "..."], "answer": 0, "explanation": "..."}]}',
 }
 
 _SYSTEM = ("You are an expert teacher who writes accurate, clear study material for students. "
@@ -100,7 +166,7 @@ def make_notes(client, material: str, o: dict, steps, progress) -> dict:
               f"\nTopic: {o['topic'] or 'as in the material'}\nLevel: {o.get('level') or 'secondary school'}"
               f"\nStart with a '# ' title. Write in Markdown only (no JSON, no code fences)."
               f"{_extra(o)}\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-    text = client.chat(_SYSTEM + i18n.write_rule(o["language"]), prompt, max_tokens=8192,
+    text = client.chat(_SYSTEM + _rule(o), prompt, max_tokens=8192,
                        should_stop=progress.cancelled)
     text = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", text.strip())
     title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), o["topic"] or "Notes")
@@ -119,7 +185,7 @@ def make_guide(client, material: str, o: dict, steps, progress) -> dict:
     overview tables computed from the question bank and past-paper analysis when available."""
     bank, analysis = o.get("bank"), o.get("analysis") or {}
     topic = o["topic"] or analysis.get("subject") or "the course"
-    system = GUIDE_SYSTEM + i18n.write_rule(o["language"])
+    system = GUIDE_SYSTEM + _rule(o)
 
     # 1. Chapters: from the question bank, the analysis, or the AI.
     if bank:
@@ -218,7 +284,7 @@ def make_flashcards(client, material: str, o: dict, steps, progress) -> dict:
                   + (f"Do not repeat: {avoid}\n" if avoid else "") + _extra(o) +
                   '\nReply with JSON: {"cards": [{"front": "...", "back": "..."}]}'
                   f"\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-        items = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "cards", progress)
+        items = _ask_json(client, _SYSTEM + _rule(o), prompt, "cards", progress)
         new = [{"front": _text(c.get("front")), "back": _text(c.get("back"))}
                for c in items if isinstance(c, dict) and _text(c.get("front")) and _text(c.get("back"))]
         if not new:
@@ -252,7 +318,7 @@ def make_vocab(client, material: str, o: dict, steps, progress) -> dict:
                   '\nReply with JSON: {"words": [{"word": "...", "part_of_speech": "...", "meaning": "...",'
                   ' "example": "...", "translation": "...", "synonyms": ["..."]}]}'
                   + (f"\n\nMATERIAL:\n{material}" if material and not batch else ""))
-        rows = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "words", progress)
+        rows = _ask_json(client, _SYSTEM + _rule(o), prompt, "words", progress)
         for r in rows:
             if isinstance(r, dict) and _text(r.get("word")) and _text(r.get("meaning")):
                 items.append({k: _text(r.get(k)) for k in ("word", "part_of_speech", "meaning",
@@ -278,7 +344,7 @@ def make_quiz(client, material: str, o: dict, steps, progress) -> dict:
                   '\nReply with JSON: {"questions": [{"question": "...", "options": ["...", "...", "...", "..."],'
                   ' "answer": 0, "explanation": "why the answer is right"}]} where "answer" is the index 0-3.'
                   f"\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-        rows = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "questions", progress)
+        rows = _ask_json(client, _SYSTEM + _rule(o), prompt, "questions", progress)
         new = []
         for r in rows:
             options = [re.sub(r"^\s*\(?[A-Da-d][).:]\s+", "", _text(x)) for x in (r.get("options") or [])
@@ -295,69 +361,64 @@ def make_quiz(client, material: str, o: dict, steps, progress) -> dict:
     return {"title": f"Quiz: {o['topic'] or 'my notes'}", "items": items}
 
 
-_GRAMMAR_PROMPTS = {
-    "en_tenses": (
-        "Write {n} English grammar items testing verb TENSES. Each is one sentence with a gap "
-        "\"_____\" and the base verb in brackets right after the gap, e.g. "
-        "\"Yesterday she _____ (go) to the market.\" Mix present/past/future, simple/continuous/"
-        "perfect, and passive where suitable. Exactly one correct answer.",
-        '{"items": [{"sentence": "...", "base": "go", "answer": "went", '
-        '"alternatives": [], "explanation": "Past simple: finished action yesterday"}]}'),
-    "en_word_form": (
-        "Write {n} English WORD FORM items. Each is one sentence with a gap \"_____\" and the root "
-        "word in capitals in brackets at the end, e.g. \"The scenery was _____. (BEAUTY)\". The "
-        "student must change the root into the right form (noun, verb, adjective, adverb, "
-        "negative prefix, plural...).",
-        '{"items": [{"sentence": "...", "base": "BEAUTY", "answer": "beautiful", '
-        '"alternatives": [], "explanation": "Adjective after was"}]}'),
-    "ms_error": (
-        "Tulis {n} soalan Bahasa Melayu jenis KENAL PASTI KESALAHAN (gaya SPM). Setiap ayat "
-        "dibahagikan kepada tepat 4 bahagian (A, B, C, D) yang jika digabungkan menjadi ayat penuh. "
-        "Tepat satu bahagian mengandungi kesalahan bahasa (ejaan, imbuhan, kata sendi nama, "
-        "penjodoh bilangan, kata ganda, struktur ayat, istilah). Beri pembetulan dan penjelasan "
-        "dalam Bahasa Melayu.",
-        '{"items": [{"segments": ["Para pelajar", "sedang mengulang kaji", "pelajaran-pelajaran", '
-        '"di perpustakaan."], "error_index": 2, "correction": "pelajaran", '
-        '"explanation": "Kata para sudah menunjukkan jamak, jadi kata ganda tidak perlu."}]}'),
-}
-
-
 def make_grammar(client, material: str, o: dict, steps, progress) -> dict:
-    test = o.get("test") if o.get("test") in GRAMMAR_TESTS else "en_tenses"
+    """A grammar test in English, Chinese or Malay. The sentences are in the language being
+    tested; instructions and explanations are in the chosen output language (o["language"])."""
+    test = o.get("test") if o.get("test") in _GRAMMAR else "en_tenses"
+    label, tested, kind, what = _GRAMMAR[test]
+    tested_name = i18n.LANGUAGES[tested]["prompt"]
+    explain_in = i18n.LANGUAGES[i18n.lang(o.get("language") or tested)]["prompt"]
     count = min(max(_as_int(o.get("count")) or 15, 1), 60)
-    instruction, shape = _GRAMMAR_PROMPTS[test]
-    language = "ms" if test == "ms_error" else "en"
+    system = (_SYSTEM + f" You write {tested_name} grammar test items for students. Every sentence "
+              f"and option is in natural, correct {tested_name} (except the one deliberate error "
+              f"where the item has one). Write each \"explanation\" (and nothing else) in {explain_in}.")
     items: list[dict] = []
     while len(items) < count:
         n = min(10, count - len(items))
         steps(f"Writing items {len(items) + 1}–{len(items) + n}")
         theme = f" Theme of the sentences: {o['topic']}." if o.get("topic") else ""
-        avoid = "; ".join((i.get("sentence") or " ".join(i.get("segments", [])))[:60] for i in items[-20:])
-        prompt = (instruction.format(n=n) + f" Level: {o.get('level') or 'secondary school'}.{theme}\n"
-                  + (f"Do not repeat: {avoid}\n" if avoid else "") + _extra(o) +
-                  f"\nReply with JSON: {shape}")
-        rows = _ask_json(client, _SYSTEM + i18n.write_rule(language), prompt, "items", progress)
-        new = []
-        for r in rows:
-            if not isinstance(r, dict):
-                continue
-            if test == "ms_error":
-                segments = [_text(s) for s in r.get("segments") or [] if _text(s)]
-                index = _as_int(r.get("error_index"))
-                if len(segments) == 4 and index is not None and 0 <= index < 4 and _text(r.get("correction")):
-                    new.append({"type": "error", "segments": segments, "answer": index,
-                                "correction": _text(r["correction"]), "explanation": _text(r.get("explanation"))})
-            elif "_____" in _text(r.get("sentence")) and _text(r.get("answer")):
-                new.append({"type": "fill", "sentence": _text(r["sentence"]), "base": _text(r.get("base")),
-                            "answer": _text(r["answer"]),
-                            "alternatives": [_text(a) for a in r.get("alternatives") or [] if _text(a)],
-                            "explanation": _text(r.get("explanation"))})
+        avoid = "; ".join((i.get("sentence") or i.get("question") or " ".join(i.get("segments", [])))[:60]
+                          for i in items[-20:])
+        prompt = (f"Write {n} {tested_name} grammar items testing {what}. Exactly one correct answer "
+                  f"per item. Level: {o.get('level') or 'secondary school'}.{theme}\n"
+                  + (f"Do not repeat: {avoid}\n" if avoid else "") + _extra(o)
+                  + f"\nReply with JSON: {_GRAMMAR_SHAPES[kind]}")
+        rows = _ask_json(client, system, prompt, "items", progress)
+        new = [item for item in (_grammar_item(kind, r) for r in rows) if item]
         if not new:
             break
         steps(f"Double-checking items {len(items) + 1}–{len(items) + len(new)}")
-        items += _check_items(client, new, {**o, "language": language}, progress)[:n]
-    return {"title": f"{GRAMMAR_TESTS[test]}" + (f": {o['topic']}" if o.get("topic") else ""),
-            "test": test, "items": items}
+        items += _check_items(client, new, {**o, "language": i18n.lang(o.get("language") or tested)},
+                              progress)[:n]
+    return {"title": label + (f": {o['topic']}" if o.get("topic") else ""), "test": test,
+            "tested_language": tested, "items": items}
+
+
+def _grammar_item(kind: str, r) -> dict | None:
+    """One item from the AI's reply in the shape the quiz runner uses, or None if unusable."""
+    if not isinstance(r, dict):
+        return None
+    explanation = _text(r.get("explanation"))
+    if kind == "error":
+        segments = [_text(s) for s in r.get("segments") or [] if _text(s)]
+        index = _as_int(r.get("error_index"))
+        if len(segments) == 4 and index is not None and 0 <= index < 4 and _text(r.get("correction")):
+            return {"type": "error", "segments": segments, "answer": index,
+                    "correction": _text(r["correction"]), "explanation": explanation}
+        return None
+    if kind == "mcq":
+        options = [_text(x) for x in r.get("options") or [] if _text(x)]
+        answer = _as_int(r.get("answer"))
+        if len(options) == 4 and answer is not None and 0 <= answer < 4 and _text(r.get("question")):
+            return {"type": "mcq", "question": _text(r["question"]), "options": options,
+                    "answer": answer, "explanation": explanation}
+        return None
+    if "_____" in _text(r.get("sentence")) and _text(r.get("answer")):
+        return {"type": "fill", "sentence": _text(r["sentence"]), "base": _text(r.get("base")),
+                "answer": _text(r["answer"]),
+                "alternatives": [_text(a) for a in r.get("alternatives") or [] if _text(a)],
+                "explanation": explanation}
+    return None
 
 
 def _check_items(client, items: list[dict], o: dict, progress: Progress) -> list[dict]:
@@ -370,7 +431,7 @@ def _check_items(client, items: list[dict], o: dict, progress: Progress) -> list
               'Reply with JSON: {"checks": [{"n": 1, "ok": true, "answer": ...}]}\n\nITEMS:\n'
               + json.dumps(numbered, ensure_ascii=False, indent=1))
     system = ("You are a strict independent examiner checking test items. Reply with JSON only."
-              + i18n.write_rule(o.get("language", "en")))
+              + _rule(o))
     checks = _ask_json(client, system, prompt, "checks", progress, max_tokens=4096, think=True)
     if not checks:
         progress.warn("could not double-check some items")
@@ -414,7 +475,8 @@ def generate(client, kind: str, sources: list[Source], options: dict,
     if kind not in MAKERS:
         raise ValueError(f"Unknown study tool: {kind}")
     progress = progress or Progress()
-    o = {"topic": "", **options, "language": i18n.lang(options.get("language"))}
+    o = {"topic": "", **options, "language": i18n.lang(options.get("language")),
+         "source_languages": source_languages(sources)}
     big = sum(len(s.text) for s in sources) > 9000
     note_steps = sum(len(_chunks(s.text, 9000)) for s in sources) if big else 0
     steps = _Steps(progress, note_steps + 4)
@@ -427,7 +489,8 @@ def generate(client, kind: str, sources: list[Source], options: dict,
     return {"id": uuid.uuid4().hex[:10], "kind": kind,
             "created": datetime.now().isoformat(timespec="seconds"),
             "model": getattr(client, "model", ""), "language": o["language"],
-            "options": {k: v for k, v in options.items() if k not in ("text", "bank", "analysis")},
+            "options": {k: v for k, v in options.items()
+                        if k not in ("text", "bank", "analysis", "source_languages")},
             "sources": [s.citation() for s in sources], **result}
 
 

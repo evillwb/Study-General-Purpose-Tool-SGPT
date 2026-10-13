@@ -14,11 +14,12 @@ OpenAI-compatible server. Exams and notes can be in **English, Chinese (中文) 
 
 | Page | What it does |
 | --- | --- |
-| **Exam** | A new practice paper from your past papers, notes, links or a topic (searched online), with a **model answer paper** and a **step-by-step marking scheme**. Choose question types, marks and difficulty (presets, a custom easy/medium/hard mix, "like my past papers", and a fine-tune slider), or copy your past papers' layout. **Analyse past papers** first to see their topics, layout and difficulty. The AI **double-checks every answer** and rewrites questions that fail the check. Edit, regenerate or delete any question; print or export to Word, PDF or Markdown. |
+| **Exam** | A new practice paper from your past papers, notes, links or a topic (searched online), with a **model answer paper** and a **step-by-step marking scheme**. Choose question types, marks and difficulty (presets, a custom easy/medium/hard mix, "like my past papers", and a fine-tune slider), or copy your past papers' layout. **Analyse past papers** first to see their topics, layout and difficulty. The AI **double-checks every answer** and rewrites questions that fail the check. Start from an **SPM, UEC, IGCSE or STPM format**. Maths is typeset (fractions, roots, powers) and questions can have **diagrams and graphs**. Edit, regenerate or delete any question; print or export to Word, PDF or Markdown, or send the questions to **Kahoot** or **Quizlet**. |
 | **Study** | **Notes** in 8 styles, including an *exam study guide* (print edition, with past-paper patterns and a revision checklist), *chapter notes with tables*, Cornell, outline, mind map and glossary, plus "ask about these notes". **Flashcards** to flip and memorise (CSV export for Anki/Quizlet). **Vocabulary** with meanings, examples and translations. **MCQ quizzes** with or without a time limit, with scoring and review. **Grammar tests**: English tenses, English word form, and Malay error identification (*kesalahan bahasa*). |
 | **Question bank** | Every question from your past-year papers, sorted by chapter, with type and a 1–10 difficulty rating. Shows the **10 hardest questions per chapter**, with answers on request; export to Word or PDF. |
 | **OCR** | Turns scanned PDFs and photos into text, offline. Export to Word, PDF, text or Markdown, make a **searchable PDF**, or use the text as a source. |
 | **Convert** | Word ↔ PDF, images ↔ PDF, Markdown, text and HTML to PDF or Word, PDF to images, merging PDFs. Old Office files, PowerPoint and Excel are converted when LibreOffice is installed. |
+| **Download** | Paste a link from YouTube, TikTok, Instagram, Facebook, X, Reddit, Bilibili, Vimeo, SoundCloud and 1,000+ other sites and save the **video (MP4/WebM/MKV) or audio (MP3/OGG/WAV/Opus)**, with cobalt-style settings: quality up to 8K, codec, container, bitrate, dub and subtitle language, filename style. Use a video's subtitles as a study source. |
 
 ## Quick start
 
@@ -83,4 +84,6 @@ Add `--help` to any of them for every option.
   for example `qwen3:8b` on Ollama or any cloud model.
 - With a cloud provider or internet search, your source text and topic are sent to that
   service. With Ollama and no internet search, everything stays on your computer.
-- Diagrams in your sources are not understood. Only the text is used.
+- Diagrams in your sources are not understood by text-only models. In the question bank, a
+  picture of each question is kept, and models that can see images get it.
+- Only download videos you own or have permission to save, and respect each site's terms.

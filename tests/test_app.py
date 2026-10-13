@@ -168,3 +168,65 @@ def test_question_bank(sample_pdf, fake_ai, tmp_path):
     assert job["state"] == "done", job
     q3 = next(q for q in job["result"]["questions"] if q["id"] == "p1-q3")
     assert q3["answer"] and q3["check"] in ("verified", "corrected")
+
+
+def test_question_bank_pictures_reach_a_vision_model(sample_pdf, fake_ai, tmp_path):
+    host, server = fake_ai
+    server.vision = True
+    c = create_app(sample_pdf, tmp_path / "out", host).test_client()
+    job = _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])
+    assert job["state"] == "done", job
+    questions = c.get("/api/bank").get_json()["bank"]["questions"]
+    assert all(q.get("image") for q in questions), questions
+    r = c.get(f"/api/bank/image/{questions[0]['image']}")
+    assert r.status_code == 200 and r.data[:4] == b"\x89PNG"
+    assert c.get("/api/bank/image/..%2Fsecret.png").status_code == 404
+
+    sorting = [r for r in server.requests if "sorting past exam questions" in r["messages"][0]["content"]]
+    assert sorting and len(sorting[0]["messages"][1]["images"]) == len(questions)
+    assert "picture 1 = the question with id" in sorting[0]["messages"][1]["content"]
+
+    job = _wait(c, c.post("/api/bank/solve", json={"ids": [questions[1]["id"]]}).get_json()["id"])
+    assert job["state"] == "done", job
+    solving = [r for r in server.requests if r["messages"][0]["content"].startswith("You are a senior examiner")]
+    assert solving and len(solving[-1]["messages"][1]["images"]) == 1
+
+    import io
+
+    import docx
+    data = c.get("/api/bank/export?view=chapters&format=docx").data
+    assert len(docx.Document(io.BytesIO(data)).inline_shapes) == len(questions)
+
+
+def test_text_only_model_gets_no_pictures(sample_pdf, fake_ai, tmp_path):
+    host, server = fake_ai
+    c = create_app(sample_pdf, tmp_path / "out", host).test_client()
+    assert _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])["state"] == "done"
+    assert not any("images" in m for r in server.requests for m in r["messages"])
+
+
+def test_each_file_has_its_own_language(tmp_path, fake_ai):
+    host, server = fake_ai
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "nota.txt").write_text("Fotosintesis ialah proses yang berlaku dalam daun. " * 20, encoding="utf-8")
+    (lib / "笔记.txt").write_text("光合作用是植物利用光能制造葡萄糖的过程。" * 20, encoding="utf-8")
+    (lib / "notes.txt").write_text("Photosynthesis is the process that happens in the leaf. " * 20)
+    c = create_app(lib, tmp_path / "out", host).test_client()
+    files = {f["name"]: f for f in c.get("/api/library").get_json()}
+    assert files["nota.txt"]["detected"] == ["ms"] and files["笔记.txt"]["detected"] == ["zh"]
+    assert files["notes.txt"]["detected"] == ["en"] and files["notes.txt"]["language"] == "auto"
+
+    c.patch("/api/library/notes.txt", json={"language": "ms"})  # the user knows better
+    assert {f["name"]: f for f in c.get("/api/library").get_json()}["notes.txt"]["language"] == "ms"
+
+    job = _wait(c, c.post("/api/generate", json={"topic": "Photosynthesis", "language": "en",
+                                                  "structure": "custom", "plan": [{"type": "short", "count": 1}],
+                                                  "sources": {"use_files": True}}).get_json()["id"])
+    assert job["state"] == "done", job
+    readers = [r["messages"][0]["content"] for r in server.requests if "study notes" in r["messages"][0]["content"]]
+    assert any("Some of the material is in Simplified Chinese" in r for r in readers)
+    assert any("Some of the material is in Malay" in r for r in readers)
+    writer = next(r for r in server.requests if "brand-new" in r["messages"][0]["content"])
+    rule = writer["messages"][0]["content"]
+    assert "in English, even when" in rule and "Malay" in rule and "Chinese" in rule

@@ -44,10 +44,18 @@ function el(tag, attrs = {}, ...children) {
 const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 // Plain text from the AI -> safe HTML with **bold**, *italic* and line breaks.
-const fmt = (s) => escapeHtml(s)
-  .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-  .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-  .replace(/\n/g, "<br>");
+// Formulas ($...$) are drawn on the server as SVG pictures.
+const MATH_RE = /\$(?!\s)([^$\n]{1,300}?)(?<!\s)\$/g;
+const mathImg = (tex) => `<img class="math" alt="${escapeHtml(tex)}" src="/api/math.svg?tex=${encodeURIComponent(tex)}" onerror="this.replaceWith(document.createTextNode(this.alt))">`;
+const fmt = (s) => {
+  const formulas = [];
+  const text = String(s ?? "").replace(MATH_RE, (_, tex) => `\u2063${formulas.push(tex) - 1}\u2063`);
+  return escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\n/g, "<br>")
+    .replace(/\u2063(\d+)\u2063/g, (_, i) => mathImg(formulas[i]));
+};
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const letter = (i) => String.fromCharCode(65 + i);
 
@@ -195,7 +203,7 @@ function wireSettings() {
 }
 
 // ---------- Builder: topic + sources --------------------------------------------
-const BUILDER_FIELDS = ["topic", "subject", "level", "language", "source_language", "src-text", "src-links",
+const BUILDER_FIELDS = ["topic", "subject", "level", "language", "src-text", "src-links",
   "instructions", "minutes", "challenge"];
 
 function saveBuilder() {
@@ -205,6 +213,8 @@ function saveBuilder() {
   data.difficulty = $("input[name=difficulty]:checked").value;
   data.plan = state.plan;
   data.verify = $("#verify").checked;
+  data.diagrams = $("#diagrams").checked;
+  data.template = $("#template").value;
   data.mix = state.mix;
   store.set("builder", data);
 }
@@ -218,6 +228,8 @@ function loadBuilder() {
   }
   if (data.mix) state.mix = data.mix;
   if (data.verify === false) $("#verify").checked = false;
+  if (data.diagrams === false) $("#diagrams").checked = false;
+  if (data.template) $("#template").value = data.template;
   state.plan = {};
   const defaults = Object.fromEntries(state.meta.default_plan.map((p) => [p.type, p]));
   for (const t of state.meta.question_types) {
@@ -228,6 +240,8 @@ function loadBuilder() {
     };
   }
 }
+
+const LANG_SHORT = { en: "English", zh: "中文", ms: "Melayu" };
 
 async function loadLibrary() {
   state.library = await api("/api/library").catch(() => []);
@@ -245,6 +259,12 @@ async function loadLibrary() {
       onchange: (e) => updateFile(f.name, { role: e.target.value }) },
       el("option", { value: "paper", selected: f.role === "paper" }, "Past paper"),
       el("option", { value: "notes", selected: f.role !== "paper" }, "Notes"));
+    const detected = (f.detected || []).map((c) => LANG_SHORT[c] || c).join(" + ");
+    const lang = el("select", { class: "role lang", "aria-label": `Language of ${f.name}`,
+      title: "The language this file is in. The exam is always written in the exam language.",
+      onchange: (e) => updateFile(f.name, { language: e.target.value }) },
+      el("option", { value: "auto", selected: f.language === "auto" }, detected ? `Auto: ${detected}` : "Auto"),
+      ...Object.entries(LANG_SHORT).map(([c, label]) => el("option", { value: c, selected: f.language === c }, label)));
     const use = el("label", { class: "switch", title: f.use ? "Used" : "Not used" },
       el("input", { type: "checkbox", checked: f.use, "aria-label": `Use ${f.name}`,
         onchange: (e) => updateFile(f.name, { use: e.target.checked }) }),
@@ -252,7 +272,7 @@ async function loadLibrary() {
     return el("li", { class: f.use ? "" : "off" },
       el("span", { class: `file-icon ${f.type}` }, f.type),
       el("div", { class: "item-main" }, el("div", { class: "item-name", title: f.name }, f.name), subEl),
-      role,
+      el("div", { class: "file-selects" }, role, lang),
       el("div", { class: "file-actions" }, use,
         el("button", { class: "icon-btn", type: "button", title: "Remove", "aria-label": `Remove ${f.name}`,
           onclick: () => deleteFile(f.name) }, "✕")));
@@ -285,7 +305,7 @@ function renderAnalysisBar() {
 
 async function startAnalysis() {
   if (state.jobId) return toast("Please wait for the current job to finish.");
-  try { followJob(await api("/api/analyse", { json: aiPayload() })); }
+  try { followJob(await api("/api/analyse", { json: { ...aiPayload(), language: $("#language").value } })); }
   catch (e) { toast(e.message); }
 }
 
@@ -317,6 +337,10 @@ function renderAnalysis() {
       el("h2", {}, "Past paper analysis"),
       el("p", { class: "muted" }, `${a.papers.map((p) => p.name).join(", ")} · analysed by ${a.model}`)),
     el("div", { class: "chips" }, facts.map((f) => el("span", { class: "chip" }, f))),
+    el("p", { class: "hint" }, a.papers.map((p) => p.pages
+      ? `${p.name}: read all ${plural(p.pages, "page")}` + (p.questions_found ? `, ${plural(p.questions_found, "question")}` : "")
+        + (p.chapters?.length > 1 ? ` in ${plural(p.chapters.length, "chapter")}` : "") + (p.parts > 1 ? ` (analysed in ${p.parts} parts)` : "")
+      : p.name).join(" · ")),
     m.difficulty && el("div", {}, el("h3", {}, "Difficulty"), mixBar(m.difficulty, true),
       m.difficulty_notes && el("p", { class: "hint" }, m.difficulty_notes)),
     el("div", {}, el("h3", {}, "Layout"), sectionTable(m.sections)),
@@ -328,7 +352,8 @@ function renderAnalysis() {
       m.style_notes && el("div", {}, el("h3", {}, "Question style"), el("p", {}, m.style_notes))),
     a.papers.length > 1 && el("div", {}, el("h3", {}, "Each paper"), a.papers.map((p) =>
       el("details", {}, el("summary", {}, p.name),
-        p.difficulty && mixBar(p.difficulty), sectionTable(p.sections)))),
+        p.difficulty && mixBar(p.difficulty), sectionTable(p.sections),
+        p.chapters?.length > 1 && el("p", { class: "hint" }, `Chapters: ${p.chapters.join(" · ")}`)))),
     el("div", { class: "analysis-actions" },
       el("button", { class: "btn", type: "button", onclick: () => { $("input[name=structure][value=match]").checked = true; saveBuilder(); updateSources(); toast("The new exam will copy this layout."); } }, "Use this layout"),
       m.difficulty && el("button", { class: "btn", type: "button", onclick: () => { $("input[name=difficulty][value=past]").checked = true; saveBuilder(); renderDifficulty(); toast("The new exam will match this difficulty."); } }, "Use this difficulty"),
@@ -419,6 +444,19 @@ function updateSources() {
 }
 
 // ---------- Builder: question plan ------------------------------------------------
+function applyTemplate(id) {
+  const tpl = state.meta.exam_templates.find((t) => t.id === id);
+  if (!tpl) return saveBuilder();
+  for (const key of Object.keys(state.plan)) state.plan[key].count = 0;
+  for (const p of tpl.plan) state.plan[p.type] = { count: p.count, marks: p.marks };
+  $("input[name=structure][value=custom]").checked = true;
+  $("#minutes").value = tpl.minutes;
+  if (!$("#level").value.trim()) $("#level").value = tpl.level;
+  saveBuilder();
+  renderPlan();
+  toast(`${tpl.label}: ${tpl.plan.reduce((a, p) => a + p.count, 0)} questions, ${tpl.minutes} minutes. Check your syllabus for the exact format.`);
+}
+
 function renderPlan() {
   const match = $("input[name=structure]:checked").value === "match";
   $("#plan").hidden = match;
@@ -468,12 +506,13 @@ async function startGeneration() {
   const payload = {
     ...aiPayload(),
     topic: $("#topic").value, subject: $("#subject").value, level: $("#level").value,
-    language: $("#language").value, source_language: $("#source_language").value,
+    language: $("#language").value, source_language: "auto",
     text: $("#src-text").value, urls: links().join("\n"), web: $("input[name=web]:checked").value,
     structure: $("input[name=structure]:checked").value, plan,
     difficulty: $("input[name=difficulty]:checked").value,
     difficulty_mix: currentMix(), challenge: Number($("#challenge").value),
     verify: $("#verify").checked,
+    diagrams: $("#diagrams").checked,
     instructions: $("#instructions").value, minutes: $("#minutes").value,
   };
   try { followJob(await api("/api/generate", { json: payload })); }
@@ -501,6 +540,13 @@ function followJob(job) {
 }
 
 const formatTime = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${s % 60}s` : `${s}s`);
+// "2 min 10s · about 4 min left": time so far and the estimate from the finished steps.
+function timeText(job) {
+  if (!job.eta) return formatTime(job.elapsed);
+  const left = job.eta < 60 ? "under a minute" : job.eta < 3600 ? `about ${Math.round(job.eta / 60)} min`
+    : `about ${Math.floor(job.eta / 3600)} h ${Math.round((job.eta % 3600) / 60)} min`;
+  return `${formatTime(job.elapsed)} · ${left} left`;
+}
 
 function renderJob(job) {
   if (job.kind === "generate" || job.kind === "analyse") {
@@ -508,7 +554,7 @@ function renderJob(job) {
     $("#progress").classList.toggle("running", job.state === "running");
     $("#bar-fill").style.width = `${Math.max(pct, 3)}%`;
     $("#progress-steps").textContent = job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total}` : "";
-    $("#elapsed").textContent = formatTime(job.elapsed);
+    $("#elapsed").textContent = timeText(job);
     $("#progress-title").textContent = { running: job.kind === "analyse" ? "Analysing your past papers…" : "Writing your exam…", error: "Something went wrong",
       cancelled: "Stopped", done: "Finished" }[job.state];
     $("#progress-msg").textContent = job.state === "error" ? job.error : job.message;
@@ -617,6 +663,8 @@ function questionCard(q) {
         { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
       el("span", { class: "qmarks" }, plural(q.marks, "mark"))),
     el("div", { class: "qtext", html: fmt(q.question) }),
+    q.diagram && el("img", { class: "diagram", alt: `Diagram for question ${q.number}`,
+      src: `/api/exams/${state.exam.id}/figure/diagram-${q.number}.svg` }),
     q.options.length > 0 && el("ul", { class: "options" }, q.options.map((o, i) =>
       el("li", { class: i === correct ? "correct" : "" }, el("b", {}, letter(i)), el("span", { html: fmt(o) })))),
     q.parts.length > 0 && el("ul", { class: "parts" }, q.parts.map((p) =>
@@ -721,10 +769,14 @@ function showView(view) {
   $("#view-convert").hidden = view !== "convert";
   $("#view-bank").hidden = view !== "bank";
   $("#view-study").hidden = view !== "study";
+  $("#view-media").hidden = view !== "media";
+  if (view === "media") renderMediaPage();
   if (view === "study") { loadStudyRecent(); renderStudyForm(); }
   if (view === "bank") loadBank();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "library") loadExams();
+  if (view === "convert") loadConverted();
+  pollDock();
 }
 
 // ---------- OCR only -------------------------------------------------------------------
@@ -750,7 +802,7 @@ async function startOcr(files) {
 }
 
 function renderOcrJob(job) {
-  $("#ocr-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#ocr-msg").textContent = job.state === "error" ? job.error : `${job.message} · ${timeText(job)}`;
   $("#ocr-fill").style.width = `${Math.max(3, Math.round(((job.done + (job.state === "done" ? 1 : 0)) / Math.max(job.total, 1)) * 100))}%`;
   $("#ocr-cancel").hidden = job.state !== "running";
   if (job.state === "running") return;
@@ -801,7 +853,10 @@ const STYLE_HINTS = {
 function initStudy() {
   const m = state.meta.study;
   $("#st-style").replaceChildren(...Object.entries(m.note_styles).map(([id, label]) => el("option", { value: id }, label)));
-  $("#st-test").replaceChildren(...Object.entries(m.grammar_tests).map(([id, label]) => el("option", { value: id }, label)));
+  const groups = { en: "English", zh: "中文 (Chinese)", ms: "Bahasa Melayu" };
+  $("#st-test").replaceChildren(...Object.entries(groups).map(([code, name]) => el("optgroup", { label: name },
+    ...Object.entries(m.grammar_tests).filter(([id]) => id.startsWith(code + "_"))
+      .map(([id, label]) => el("option", { value: id }, label.split(" · ")[1] || label)))));
   $("#st-language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
   $("#st-translate").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
   const saved = store.get("study", {});
@@ -861,7 +916,7 @@ async function generateStudy() {
     $("#sp-msg").textContent = j.state === "error" ? j.error : j.message;
     $("#sp-fill").style.width = `${Math.max(3, Math.round((j.done / Math.max(j.total, 1)) * 100))}%`;
     $("#sp-steps").textContent = j.total > 1 ? `Step ${Math.min(j.done + 1, j.total)} of ${j.total}` : "";
-    $("#sp-elapsed").textContent = formatTime(j.elapsed);
+    $("#sp-elapsed").textContent = timeText(j);
     $("#sp-cancel").hidden = j.state !== "running";
   };
   update(job);
@@ -903,7 +958,7 @@ async function openSet(id) {
 
 function exportButtons(set, formats) {
   return el("div", { class: "actions" }, formats.map((f) => el("a", { class: "btn small", href: `/api/study/${set.id}/export?format=${f}` },
-    { docx: "Word", pdf: "PDF", md: "Markdown", csv: "CSV (Anki)" }[f])));
+    { docx: "Word", pdf: "PDF", md: "Markdown", csv: "CSV (Anki)", kahoot: "Kahoot", quizlet: "Quizlet" }[f])));
 }
 
 function renderSet() {
@@ -912,7 +967,9 @@ function renderSet() {
     el("div", {}, el("h1", {}, s.title), el("div", { class: "chips" },
       [state.meta.study.kinds[s.kind], s.style && state.meta.study.note_styles[s.style], s.model && `AI: ${s.model}`]
         .filter(Boolean).map((c) => el("span", { class: "chip" }, c)))),
-    exportButtons(s, s.kind === "flashcards" || s.kind === "vocab" ? ["csv", "docx", "pdf", "md"] : ["docx", "pdf", "md"]));
+    exportButtons(s, s.kind === "flashcards" || s.kind === "vocab" ? ["csv", "quizlet", "docx", "pdf", "md"]
+      : s.kind === "quiz" || (s.kind === "grammar" && s.items?.some((it) => it.type === "mcq")) ? ["kahoot", "quizlet", "docx", "pdf", "md"]
+        : s.kind === "grammar" ? ["quizlet", "docx", "pdf", "md"] : ["docx", "pdf", "md"]));
   const body = { notes: renderNotes, flashcards: renderFlashcards, vocab: renderVocab, quiz: renderQuizStart, grammar: renderQuizStart }[s.kind](s);
   $("#study-view").replaceChildren(head, body);
 }
@@ -1181,7 +1238,8 @@ async function loadBank() {
 function bankProgress(job) {
   $("#bank-progress").hidden = job.state !== "running";
   $("#bank-msg").textContent = job.message;
-  $("#bank-steps").textContent = job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total} · ${formatTime(job.elapsed)}` : "";
+  $("#bank-steps").textContent = (job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total} · ` : "") + timeText(job);
+  bankState.jobId = job.id;
   $("#bank-fill").style.width = `${Math.max(3, Math.round((job.done / Math.max(job.total, 1)) * 100))}%`;
 }
 
@@ -1233,6 +1291,7 @@ function renderBank() {
   $("#bank-answers").disabled = bankState.busy;
   $("#bank-n").hidden = bankState.tab !== "hardest";
   $("#bank-sort").hidden = bankState.tab === "hardest";
+  $("#bank-view").hidden = !bankState.bank.questions.some((q) => q.image);
   $$("[data-bank-tab]").forEach((t) => t.classList.toggle("active", t.dataset.bankTab === bankState.tab));
   const chapterSelect = $("#bank-chapter");
   if (chapterSelect.options.length !== b.chapters.length + 1) {
@@ -1266,14 +1325,16 @@ function bankCard(q, rank) {
     el("div", { class: "qhead" },
       rank && el("span", { class: "rank" }, `#${rank}`),
       el("span", { class: "qnum" }, `Q${q.number}`),
-      el("span", { class: "tag" }, q.paper),
+      el("span", { class: "tag" }, q.paper + (q.section ? ` · ${q.section}` : "") + (q.page ? ` · p.${q.page}` : "")),
       el("span", { class: "tag" }, typeLabel(q.type)),
       q.topic && el("span", { class: "tag" }, q.topic),
       q.check && el("span", { class: `tag ${q.check}` }, { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
       el("span", { class: "qmarks" },
         el("span", { class: "diff", title: "Difficulty out of 10" }, el("span", { class: "diff-bar" }, el("span", { style: `width:${q.difficulty * 10}%` })), `${q.difficulty}/10`),
         q.marks ? ` · ${plural(q.marks, "mark")}` : "")),
-    el("div", { class: "qtext", html: fmt(q.text) }),
+    q.image && !bankState.textOnly
+      ? el("img", { class: "qpicture", src: `/api/bank/image/${q.image}`, alt: q.text.slice(0, 200), loading: "lazy" })
+      : el("div", { class: "qtext", html: fmt(q.text) }),
     q.reason && el("div", { class: "why" }, (rank ? "Why it's hard: " : "") + q.reason),
     open && q.answer && answerBlock({ ...q, accept: q.accept || "", marking_points: q.marking_points || [] }),
     q.answer && el("div", { class: "qfoot" }, el("button", { class: "btn ghost small", type: "button",
@@ -1289,7 +1350,8 @@ function ext(name) { return (name.match(/\.[^.]+$/) || [""])[0].toLowerCase(); }
 
 function renderConvert() {
   const info = state.meta.convert;
-  $("#lo-note").textContent = info.libreoffice ? " · Office files via LibreOffice" : "";
+  $("#lo-note").textContent = info.office?.length ? ` · Office files via Microsoft ${info.office.join(", ")}`
+    : info.libreoffice ? " · Office files via LibreOffice" : "";
   $("#conv-targets").replaceChildren(...CONV_TARGETS.map(([id, label]) => el("label", {},
     el("input", { type: "radio", name: "conv-target", value: id, checked: convState.target === id,
       onchange: () => { convState.target = id; renderConvert(); } }),
@@ -1305,8 +1367,11 @@ function renderConvert() {
   const office = convState.files.filter((f) => [".doc", ".rtf", ".odt", ".pptx", ".ppt", ".odp", ".xlsx", ".xls", ".ods"].includes(ext(f.name)));
   let hint = "";
   if (bad.length) hint = `Can't convert: ${bad.map((f) => f.name).join(", ")}`;
-  else if (office.length && !info.libreoffice) hint = "Old Word, PowerPoint and Excel files need LibreOffice (free) installed: libreoffice.org";
-  else if (convState.target === "docx" && convState.files.some((f) => ext(f.name) === ".pdf")) hint = "PDF → Word keeps the layout when the PDF has real text; scans are read with OCR.";
+  else if (office.length && !info.libreoffice && !info.office?.length) hint = "Old Word, PowerPoint and Excel files need Microsoft Office or LibreOffice (free, libreoffice.org) installed.";
+  else if (convState.target === "pdf" && convState.files.some((f) => ext(f.name) === ".docx") && !info.libreoffice && !info.office?.length)
+    hint = "Word → PDF keeps headings, tables and pictures. For an exact copy (same fonts and page breaks), install Microsoft Word or LibreOffice (free).";
+  else if (convState.target === "docx" && convState.files.some((f) => /^\.(pdf|png|jpe?g|webp|bmp|tiff?|gif)$/.test(ext(f.name))))
+    hint = "Keeps the layout. Scanned pages and photos are rebuilt with OCR: the text in the same place and size, and diagrams cut out as pictures.";
   else if (convState.target === "searchable-pdf") hint = "Adds an invisible text layer to scanned PDFs and photos so you can search, select and copy the text.";
   else if (convState.target === "png") hint = "One PNG per page; several pages are saved together as a .zip.";
   $("#conv-hint").textContent = hint;
@@ -1333,7 +1398,8 @@ async function runConvert(files, target) {
 }
 
 function renderConvertJob(job) {
-  $("#conv-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#conv-cancel").hidden = job.state !== "running";
+  $("#conv-msg").textContent = job.state === "error" ? job.error : `${job.message} · ${timeText(job)}`;
   $("#conv-fill").style.width = `${Math.max(3, Math.round(((job.done + (job.state === "done" ? 1 : 0)) / Math.max(job.total, 1)) * 100))}%`;
   if (job.state === "running") return;
   clearInterval(convState.timer);
@@ -1347,14 +1413,251 @@ function renderConvertJob(job) {
     results.forEach((r) => el("a", { href: r.url, download: r.name }).click());
     return;
   }
-  $("#conv-results").hidden = false;
-  $("#conv-list").prepend(...results.map((r) => el("li", {},
+  loadConverted();
+  toast(`Converted ${plural(results.length, "file")}.`);
+}
+
+async function loadConverted() {
+  const files = await api("/api/converted").catch(() => []);
+  $("#conv-results").hidden = !files.length;
+  $("#conv-list").replaceChildren(...files.map((r) => el("li", {},
     el("span", { class: `file-icon ${ext(r.name).slice(1)}` }, ext(r.name).slice(1, 5)),
     el("div", { class: "item-main" }, el("div", { class: "item-name" }, r.name),
-      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(r.size / 1024))} KB`)),
-    el("span"),
-    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Download"))));
-  toast(`Converted ${plural(results.length, "file")}.`);
+      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(r.size / 1024))} KB · ${new Date(r.created * 1000).toLocaleString()}`)),
+    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Download"),
+    el("button", { class: "btn small ghost", type: "button", "aria-label": `Delete ${r.name}`, onclick: async () => {
+      await api(r.url, { method: "DELETE" }).catch((e) => toast(e.message));
+      loadConverted();
+    } }, "Delete"))));
+}
+
+async function deleteAllConverted() {
+  if (!confirm("Delete all converted files?")) return;
+  const r = await api("/api/converted", { method: "DELETE" }).catch((e) => toast(e.message));
+  if (r) toast(`Deleted ${plural(r.removed, "file")}.`);
+  loadConverted();
+}
+
+async function deleteAllData() {
+  const settings = $("#wipe-settings").checked;
+  const answer = prompt("This deletes all your uploaded files, exams, study sets, converted files, the question bank and analyses"
+    + (settings ? ", plus your AI settings and API keys" : "") + ". It can't be undone.\n\nType DELETE to confirm.");
+  if (answer === null) return;
+  if (answer.trim().toUpperCase() !== "DELETE") return toast("Nothing was deleted.");
+  try {
+    await api("/api/data/delete-all", { json: { confirm: "DELETE", settings } });
+  } catch (e) { return toast(e.message); }
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith("sgpt:") && (settings || k !== "sgpt:ai")).forEach((k) => localStorage.removeItem(k));
+  } catch { /* storage blocked */ }
+  toast("All data deleted.");
+  setTimeout(() => location.reload(), 800);
+}
+
+// ---------- Download (video / audio), cobalt-style -------------------------------------
+const mediaState = { jobId: null, timer: null, tab: "video" };
+const MEDIA_LANGS = [["en", "English"], ["zh", "中文"], ["ms", "Bahasa Melayu"], ["ta", "தமிழ்"], ["hi", "हिन्दी"],
+  ["ja", "日本語"], ["ko", "한국어"], ["id", "Bahasa Indonesia"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"],
+  ["ar", "العربية"], ["pt", "Português"], ["ru", "Русский"]];
+const MODE_HINTS = { auto: "Video with sound.", audio: "Only the sound, e.g. as MP3.", mute: "Video without sound." };
+
+function mediaSettings() { return { ...state.meta.media.defaults, ...store.get("media", {}) }; }
+function setMediaSetting(key, value) { store.set("media", { ...store.get("media", {}), [key]: value }); renderMediaSettings(); }
+
+function mediaSpec() {
+  const s = mediaSettings();
+  return {
+    video: [
+      { key: "quality", title: "video quality", options: state.meta.media.qualities,
+        desc: "if preferred video quality isn't available, next best is picked instead." },
+      { key: "codec", title: "preferred youtube video codec", options: [["h264", "h264 (mp4)"], ["av1", "av1 (webm)"], ["vp9", "vp9 (webm)"]],
+        desc: { h264: "h264: best compatibility, average quality. max quality is 1080p.",
+          av1: "av1: best quality, small file size. most supported resolutions.",
+          vp9: "vp9: same quality as av1, but the file is about 2x bigger. most supported resolutions." }[s.codec] },
+      { key: "container", title: "file container", options: [["auto", "auto"], ["mp4", "mp4"], ["webm", "webm"], ["mkv", "mkv"]],
+        desc: "when \"auto\" is selected, the best container is picked automatically for the chosen codec." },
+      { key: "allow_h265", title: "high efficiency video codec", toggle: "allow h265 for videos",
+        desc: "allows downloading videos from platforms like tiktok in higher quality at cost of compatibility." },
+      { key: "twitter_gif", title: "twitter/x", toggle: "convert looping videos to GIF",
+        desc: "GIF conversion is inefficient, converted file may be big and low quality." },
+    ],
+    audio: [
+      { key: "audio_format", title: "audio format", options: ["best", "mp3", "ogg", "wav", "opus"].map((f) => [f, f]),
+        desc: "all formats but \"best\" are converted from the source format, there will be some quality loss." },
+      { key: "bitrate", title: "audio bitrate", options: ["320", "256", "128", "96", "64", "8"].map((b) => [b, `${b}kb/s`]),
+        desc: "bitrate is applied only when converting audio to a lossy format (mp3, ogg, opus)." },
+      { key: "dub", title: "youtube audio track", select: [["original", "original"], ...MEDIA_LANGS],
+        desc: "a dubbed audio track in this language is used if the video has one." },
+    ],
+    other: [
+      { key: "subtitles", title: "subtitles", select: [["none", "none"], ["auto", "all available"], ...MEDIA_LANGS],
+        desc: "subtitles in this language are added to the video file if they're available." },
+      { key: "filename", title: "filename style", options: ["classic", "basic", "pretty", "nerdy"].map((f) => [f, f]),
+        desc: { classic: "youtube_dQw4w9WgXcQ_1920x1080_h264.mp4", basic: "Video Title (1080p, h264).mp4",
+          pretty: "Video Title (1080p, h264, youtube).mp4", nerdy: "Video Title (1080p, h264, youtube, dQw4w9WgXcQ).mp4" }[s.filename] },
+      { key: "no_metadata", title: "file metadata", toggle: "disable file metadata",
+        desc: "title, artist, and other info will not be added to the file." },
+      { key: "cookies", title: "sign-in cookies", select: state.meta.media.browsers.map((b) => [b, b === "none" ? "don't use" : b]),
+        desc: "for videos that need you to be signed in (Instagram, Facebook, age-restricted YouTube): sign in to the site in this browser. Cookies are read on this computer only and never sent anywhere else. Firefox works best." },
+    ],
+  };
+}
+
+function renderMediaSettings() {
+  const s = mediaSettings();
+  $$("[data-media-tab]").forEach((t) => t.classList.toggle("active", t.dataset.mediaTab === mediaState.tab));
+  $("#media-settings-body").replaceChildren(...mediaSpec()[mediaState.tab].map((row) => el("div", { class: "media-setting" },
+    el("h3", {}, row.title),
+    row.options && el("div", { class: "segmented wrap-auto", role: "radiogroup", "aria-label": row.title },
+      row.options.map(([value, label]) => el("label", {},
+        el("input", { type: "radio", name: `media-${row.key}`, value, checked: String(s[row.key]) === value,
+          onchange: () => setMediaSetting(row.key, value) }), el("span", {}, label)))),
+    row.select && el("select", { "aria-label": row.title, onchange: (e) => setMediaSetting(row.key, e.target.value) },
+      row.select.map(([value, label]) => el("option", { value, selected: s[row.key] === value }, label))),
+    row.toggle && el("label", { class: "check" }, el("input", { type: "checkbox", checked: Boolean(s[row.key]),
+      onchange: (e) => setMediaSetting(row.key, e.target.checked) }), row.toggle),
+    el("p", { class: "hint" }, row.desc))));
+}
+
+function mediaMode() { return $("input[name=media-mode]:checked").value; }
+
+function renderMediaPage() {
+  const m = state.meta.media;
+  $("#media-missing").hidden = m.available;
+  $("#media-sites").textContent = m.sites.join(" · ") + " · and many more";
+  $("#media-mode-hint").textContent = MODE_HINTS[mediaMode()];
+  $("#media-clear").hidden = !$("#media-url").value;
+  $("#media-go").disabled = !m.available || Boolean(mediaState.jobId);
+  renderMediaSettings();
+  loadDownloads();
+}
+
+async function startMediaDownload() {
+  const url = $("#media-url").value.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return toast("Paste a link that starts with http:// or https://");
+  if (mediaState.jobId) return toast("Please wait for the current download to finish.");
+  store.set("mediaMode", mediaMode());
+  let job;
+  try { job = await api("/api/media/download", { json: { url, settings: { ...mediaSettings(), mode: mediaMode() } } }); }
+  catch (e) { return toast(e.message); }
+  mediaState.jobId = job.id;
+  $("#media-progress").hidden = false;
+  $("#media-thumb").hidden = true;
+  $("#media-title").textContent = "Getting ready…";
+  renderMediaPage();
+  clearInterval(mediaState.timer);
+  mediaState.timer = setInterval(async () => {
+    try { renderMediaJob(await api(`/api/jobs/${mediaState.jobId}`)); } catch { /* retry */ }
+  }, 700);
+}
+
+function renderMediaJob(job) {
+  const meta = job.result?.meta || {};
+  if (meta.title) $("#media-title").textContent = meta.title + (meta.uploader ? ` · ${meta.uploader}` : "");
+  if (meta.thumbnail && $("#media-thumb").src !== meta.thumbnail) { $("#media-thumb").src = meta.thumbnail; $("#media-thumb").hidden = false; }
+  $("#media-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#media-time").textContent = timeText(job);
+  $("#media-fill").style.width = `${Math.max(3, Math.round((job.done / Math.max(job.total, 1)) * 100))}%`;
+  $("#media-cancel").hidden = job.state !== "running";
+  if (job.state === "running") return;
+  clearInterval(mediaState.timer);
+  mediaState.jobId = null;
+  renderMediaPage();
+  if (job.state === "error") return toast(job.error);
+  $("#media-progress").hidden = true;
+  if (job.state === "cancelled") return toast("Download stopped.");
+  const file = job.result?.file;
+  if (file) { el("a", { href: file.url, download: file.name }).click(); toast(`Saved ${file.name}`); }
+}
+
+async function loadDownloads() {
+  const files = await api("/api/downloads").catch(() => []);
+  $("#media-results").hidden = !files.length;
+  $("#media-list").replaceChildren(...files.map((r) => el("li", {},
+    el("span", { class: `file-icon media ${ext(r.name).slice(1)}` }, ext(r.name).slice(1, 5)),
+    el("div", { class: "item-main" }, el("div", { class: "item-name", title: r.name }, r.name),
+      el("div", { class: "item-sub" }, `${r.size > 1048576 ? (r.size / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(r.size / 1024)) + " KB"} · ${new Date(r.created * 1000).toLocaleString()}`)),
+    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Save"),
+    el("button", { class: "btn small ghost", type: "button", "aria-label": `Delete ${r.name}`, onclick: async () => {
+      await api(r.url, { method: "DELETE" }).catch((e) => toast(e.message));
+      loadDownloads();
+    } }, "Delete"))));
+}
+
+async function deleteAllDownloads() {
+  if (!confirm("Delete all downloaded files?")) return;
+  const r = await api("/api/downloads", { method: "DELETE" }).catch((e) => toast(e.message));
+  if (r) toast(`Deleted ${plural(r.removed, "file")}.`);
+  loadDownloads();
+}
+
+async function useSubtitles() {
+  const url = $("#media-url").value.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return toast("Paste the video's link first.");
+  let job;
+  try { job = await api("/api/media/transcript", { json: { url, language: $("#language").value || "en" } }); }
+  catch (e) { return toast(e.message); }
+  toast("Getting the subtitles…");
+  const timer = setInterval(async () => {
+    let j;
+    try { j = await api(`/api/jobs/${job.id}`); } catch { return; }
+    if (j.state === "running") return;
+    clearInterval(timer);
+    if (j.state !== "done") return toast(j.error || "Stopped.");
+    await loadLibrary();
+    toast(`Added “${j.result.name}” to your sources. Use it on the Exam or Study page.`);
+  }, 800);
+}
+
+function initMedia() {
+  $("#media-go").addEventListener("click", startMediaDownload);
+  $("#media-url").addEventListener("keydown", (e) => { if (e.key === "Enter") startMediaDownload(); });
+  $("#media-url").addEventListener("input", () => { $("#media-clear").hidden = !$("#media-url").value; });
+  $("#media-clear").addEventListener("click", () => { $("#media-url").value = ""; $("#media-clear").hidden = true; $("#media-url").focus(); });
+  $("#media-paste").addEventListener("click", async () => {
+    try { $("#media-url").value = (await navigator.clipboard.readText()).trim(); $("#media-clear").hidden = !$("#media-url").value; }
+    catch { toast("Your browser blocked pasting. Press Ctrl+V in the box instead."); $("#media-url").focus(); }
+  });
+  const mode = store.get("mediaMode", "auto");
+  const radio = $(`input[name=media-mode][value=${mode}]`);
+  if (radio) radio.checked = true;
+  $$("input[name=media-mode]").forEach((r) => r.addEventListener("change", () => { store.set("mediaMode", r.value); renderMediaPage(); }));
+  $$("[data-media-tab]").forEach((t) => t.addEventListener("click", () => { mediaState.tab = t.dataset.mediaTab; renderMediaSettings(); }));
+  $("#media-cancel").addEventListener("click", () => mediaState.jobId && stopJob(mediaState.jobId));
+  $("#media-clear-all").addEventListener("click", deleteAllDownloads);
+  $("#media-subs").addEventListener("click", useSubtitles);
+}
+
+// ---------- Jobs on other pages: progress, time left and Stop ---------------------------
+const JOB_PAGES = { generate: "create", analyse: "create", regenerate: "create", bank: "bank", "bank-solve": "bank",
+  study: "study", ask: "study", ocr: "ocr", convert: "convert", media: "media", transcript: "media" };
+const JOB_NAMES = { generate: "Writing your exam", analyse: "Analysing past papers", regenerate: "Rewriting a question",
+  bank: "Sorting the question bank", "bank-solve": "Answering bank questions", study: "Making study material",
+  ask: "Answering your question", ocr: "OCR", convert: "Converting files", media: "Downloading",
+  transcript: "Getting subtitles" };
+const dock = { timer: null };
+
+function currentView() { return $(".nav-link.active")?.dataset.view; }
+
+async function stopJob(id) {
+  await api(`/api/jobs/${id}/cancel`, { method: "POST" }).catch(() => {});
+  toast("Stopping after the current step…");
+}
+
+async function pollDock() {
+  let jobs = [];
+  try { jobs = await api("/api/jobs/running"); } catch { /* server restarting */ }
+  // Jobs on another page, plus the two that have no Stop button on their own page.
+  const away = jobs.filter((j) => JOB_PAGES[j.kind] !== currentView() || j.kind === "regenerate" || j.kind === "ask");
+  $("#job-dock").replaceChildren(...away.map((j) => el("div", { class: "job-card" },
+    el("div", { class: "job-top" },
+      el("button", { class: "job-name", type: "button", title: "Go to this page", onclick: () => showView(JOB_PAGES[j.kind]) }, JOB_NAMES[j.kind] || j.kind),
+      el("button", { class: "btn small", type: "button", onclick: () => stopJob(j.id) }, "Stop")),
+    el("div", { class: "job-msg", title: j.message }, j.message),
+    el("div", { class: "bar" }, el("div", { style: `width:${Math.max(3, Math.round((j.done / Math.max(j.total, 1)) * 100))}%` })),
+    el("div", { class: "job-msg" }, timeText(j)))));
+  clearTimeout(dock.timer);
+  dock.timer = setTimeout(pollDock, jobs.length ? 1500 : 6000);
 }
 
 function download(name, text, type) {
@@ -1376,11 +1679,18 @@ function renderOcrResults() {
           el("button", { class: "btn small", type: "button", onclick: async () => {
             try { await navigator.clipboard.writeText(ocrText(file)); toast("Copied."); } catch { toast("Copy failed. Use a download instead."); }
           } }, "Copy"),
-          ...["docx", "pdf", "txt", "md"].map((fmt) => el("button", { class: "btn small", type: "button",
-            onclick: () => exportText(ocrMarkdown(file), fmt, base) }, `.${fmt}`)),
-          ocrState.files[file.name] && el("button", { class: "btn small", type: "button",
-            title: "The original scan with a hidden text layer, so you can search and copy it",
-            onclick: () => runConvert([ocrState.files[file.name]], "searchable-pdf") }, "Searchable PDF"),
+          ocrState.files[file.name] && el("span", { class: "btn-group", title: "Same look as the original" },
+            el("span", { class: "group-label" }, "Same look:"),
+            el("button", { class: "btn small", type: "button",
+              title: "Editable Word file laid out like the original: text in the same place and size, diagrams as pictures",
+              onclick: () => runConvert([ocrState.files[file.name]], "docx") }, "Word"),
+            el("button", { class: "btn small", type: "button",
+              title: "The original pages with a hidden text layer, so you can search, select and copy the text",
+              onclick: () => runConvert([ocrState.files[file.name]], "searchable-pdf") }, "PDF")),
+          el("span", { class: "btn-group", title: "Just the text, including your edits below" },
+            el("span", { class: "group-label" }, "Text only:"),
+            ...[["docx", "Word"], ["txt", ".txt"], ["md", ".md"]].map(([fmt, label]) => el("button", { class: "btn small", type: "button",
+              onclick: () => exportText(ocrMarkdown(file), fmt, base) }, label))),
           el("button", { class: "btn small primary", type: "button", title: "Add this text to your exam sources", onclick: async () => {
             const form = new FormData();
             form.append("files", new File([ocrText(file)], `${base} (OCR).txt`, { type: "text/plain" }));
@@ -1399,6 +1709,13 @@ function renderOcrResults() {
 // ---------- Wiring ---------------------------------------------------------------------
 function wire() {
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
+  $("#bank-cancel").addEventListener("click", () => bankState.jobId && stopJob(bankState.jobId));
+  $("#conv-cancel").addEventListener("click", () => convState.jobId && stopJob(convState.jobId));
+  $("#conv-clear").addEventListener("click", deleteAllConverted);
+  $("#wipe-all").addEventListener("click", deleteAllData);
+  initMedia();
+  pollDock();
+  $("#template").addEventListener("change", (e) => applyTemplate(e.target.value));
   $$("[data-view-link]").forEach((b) => b.addEventListener("click", () => {
     showView(b.dataset.viewLink);
     if (!state.jobId) showStage("empty");
@@ -1437,15 +1754,25 @@ function wire() {
   convDrop.addEventListener("drop", (e) => addConvFiles([...e.dataTransfer.files]));
   $("#conv-go").addEventListener("click", () => runConvert(convState.files, convState.target));
 
-  $("#bank-build").addEventListener("click", () => runBankJob("/api/bank/build", { subject: $("#subject").value }));
+  $("#bank-language").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+  $("#bank-language").value = store.get("bankLanguage", $("#language").value || "en");
+  $("#bank-language").addEventListener("input", (e) => store.set("bankLanguage", e.target.value));
+  $("#bank-build").addEventListener("click", () => runBankJob("/api/bank/build", { subject: $("#subject").value, language: $("#bank-language").value }));
   $("#bank-answers").addEventListener("click", () => {
     const ids = bankVisible().flatMap(([, qs]) => qs).filter((q) => !q.answer).map((q) => q.id).slice(0, 60);
     if (!ids.length) return toast("These questions already have answers.");
     if (ids.length > 20 && !confirm(`Write and double-check answers for ${ids.length} questions? This can take a while.`)) return;
-    runBankJob("/api/bank/solve", { ids, language: $("#language").value });
+    runBankJob("/api/bank/solve", { ids, language: $("#bank-language").value });
   });
   $$("[data-bank-tab]").forEach((t) => t.addEventListener("click", () => { bankState.tab = t.dataset.bankTab; renderBank(); }));
   ["bank-search", "bank-sort", "bank-n"].forEach((id) => $("#" + id).addEventListener("input", renderBank));
+  $("#bank-view").value = store.get("bankView", "pictures");
+  bankState.textOnly = $("#bank-view").value === "text";
+  $("#bank-view").addEventListener("input", (e) => {
+    bankState.textOnly = e.target.value === "text";
+    store.set("bankView", e.target.value);
+    renderBank();
+  });
   $("#bank-chapter").addEventListener("change", (e) => { bankState.chapter = e.target.value; renderBank(); });
   const bankMenu = $("#bank-export");
   $("#bank-export-btn").addEventListener("click", (e) => { e.stopPropagation(); bankMenu.hidden = !bankMenu.hidden; });
@@ -1489,9 +1816,10 @@ async function init() {
   catch { document.body.prepend(el("p", { class: "note warn" }, "Could not reach the SGPT server. Is it still running?")); return; }
   $("#provider").replaceChildren(...state.meta.providers.map((p) => el("option", { value: p.id }, p.label)));
   $("#language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
-  $("#source_language").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+
   $("#engine").replaceChildren(...state.meta.search.engines.map((e) => el("option", { value: e.id }, e.label)));
   $("#ocr-missing").hidden = Boolean(state.meta.ocr);
+  $("#template").append(...state.meta.exam_templates.map((t) => el("option", { value: t.id }, t.label)));
   loadBuilder();
   wire();
   wireSettings();

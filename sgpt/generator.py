@@ -9,6 +9,7 @@ model answers and marking scheme.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import uuid
@@ -16,10 +17,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from . import i18n, prompts
+from . import figures, i18n, prompts
 from .ollama_client import parse_json
 from .pdf_extract import ExamPaper
-from .sources import Source
+from .sources import Source, source_languages
 
 QUESTION_TYPES = {
     "mcq": {"label": "Multiple choice", "marks": 1,
@@ -67,6 +68,27 @@ DEFAULT_PLAN = [{"type": "mcq", "count": 5, "marks": 1},
 WRITE_BATCH = 5   # questions per writing call (small models stay accurate on short tasks)
 SOLVE_BATCH = 4   # questions per answer/marking call
 NOTES_LIMIT = 10000
+NOTE_PARTS = 4  # chunks read from each notes source, spread over the whole file
+
+
+# Common exam formats: a starting point for the question plan (approximate; the exact
+# format depends on the subject and year, so check your syllabus).
+EXAM_TEMPLATES = {
+    "spm_p1": {"label": "SPM · Paper 1 (objective)", "level": "SPM (Form 5)", "minutes": 75,
+               "plan": [("mcq", 40, 1)]},
+    "spm_p2": {"label": "SPM · Paper 2 (Sections A, B, C)", "level": "SPM (Form 5)", "minutes": 150,
+               "plan": [("short", 4, 4), ("structured", 6, 8), ("essay", 2, 10)]},
+    "uec_junior": {"label": "UEC Junior Middle (统考初中)", "level": "UEC Junior Middle 3", "minutes": 120,
+                   "plan": [("mcq", 30, 2), ("structured", 4, 10)]},
+    "uec_senior": {"label": "UEC Senior Middle (统考高中)", "level": "UEC Senior Middle 3", "minutes": 150,
+                   "plan": [("mcq", 20, 2), ("structured", 6, 10)]},
+    "igcse_p1": {"label": "IGCSE · Multiple choice paper", "level": "IGCSE", "minutes": 45,
+                 "plan": [("mcq", 40, 1)]},
+    "igcse_p2": {"label": "IGCSE · Structured paper (Extended)", "level": "IGCSE (Extended)", "minutes": 90,
+                 "plan": [("short", 12, 3), ("structured", 4, 9)]},
+    "stpm": {"label": "STPM · Sections A, B, C", "level": "STPM (Form 6)", "minutes": 90,
+             "plan": [("mcq", 15, 1), ("structured", 2, 15), ("essay", 2, 15)]},
+}
 
 
 class Progress:
@@ -100,6 +122,7 @@ class ExamRequest:
     challenge: int = 0              # -2 (much easier) … +2 (much harder), on top of the mix
     analysis: dict | None = None    # a saved past-paper analysis, so it is not redone
     verify: bool = True             # have the AI double-check every question and answer
+    diagrams: bool = True           # let the AI add graphs, charts and shapes to questions
 
 
 # --- Helpers -----------------------------------------------------------------------------
@@ -120,7 +143,7 @@ def _as_list(value) -> list[str]:
 
 
 def _text(value) -> str:
-    return str(value).strip() if value is not None else ""
+    return figures.repair_math(str(value).strip()) if value is not None else ""
 
 
 class _Steps:
@@ -192,17 +215,73 @@ def normalise_mix(value) -> dict | None:
     return mix
 
 
-def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress) -> dict:
-    prompt = prompts.ANALYSE_PROMPT.format(name=paper.path.name, text=paper.text[:max_chars])
-    for _ in range(2):
-        reply = client.chat(prompts.ANALYSE_SYSTEM, prompt, json_mode=True, max_tokens=2048,
-                            should_stop=progress.cancelled)
-        try:
-            return normalise_blueprint(parse_json(reply), paper)
-        except ValueError:
-            continue
-    progress.warn(f"could not parse analysis of {paper.path.name}; using detected structure")
-    return fallback_blueprint(paper)
+MAX_PARTS = 16  # most chunks one paper is analysed in (each is one AI call)
+
+
+def paper_parts(paper: ExamPaper, max_chars: int) -> list[str]:
+    """The whole paper as one or more chunks of at most max_chars, for analysis.
+
+    Short papers are one chunk. For long files (for example every chapter's past-year
+    questions in one PDF) the detected questions are grouped by chapter, shortened if
+    needed so the whole file fits in MAX_PARTS chunks. Without detected questions, the
+    text is cut into chunks spread evenly over the whole file.
+    """
+    text = paper.text
+    if len(text) <= max_chars:
+        return [text]
+    if len(paper.questions) >= 3:
+        budget = max_chars * MAX_PARTS
+        heading_cost = 80 * len({q.section for q in paper.questions})
+        each = max(200, (budget - heading_cost) // len(paper.questions))
+        blocks, section = [], None
+        for q in paper.questions:
+            if q.section != section:
+                section = q.section
+                if section:
+                    blocks.append(f"\n=== {section} ===")
+            body = " ".join(q.text.split())
+            marks = f" [{q.marks} marks]" if q.marks else ""
+            blocks.append(f"{q.number}. {body[:each]}{'…' if len(body) > each else ''}{marks}")
+        parts, current = [], ""
+        for block in blocks:
+            if current and len(current) + len(block) + 1 > max_chars:
+                parts.append(current)
+                current = ""
+            current += block + "\n"
+        return parts + ([current] if current.strip() else [])
+    return _chunks(text, max_chars, MAX_PARTS)
+
+
+def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress,
+                  steps: "_Steps | None" = None, language: str = "") -> dict:
+    parts = paper_parts(paper, max_chars)
+    blueprints = []
+    for i, part in enumerate(parts):
+        if steps:
+            steps(f"Analysing {paper.path.name}" + (f" (part {i + 1} of {len(parts)})" if len(parts) > 1 else ""))
+        note = (f"\n\n(This is part {i + 1} of {len(parts)} of one long file, which may hold several "
+                "papers or chapters. Describe the structure of ONE paper as it appears here, and "
+                "list the topics in this part.)" if len(parts) > 1 else "")
+        prompt = prompts.ANALYSE_PROMPT.format(name=paper.path.name, text=part) + note
+        for _ in range(2):
+            system = prompts.ANALYSE_SYSTEM + (i18n.describe_rule(language) if language else "")
+            reply = client.chat(system, prompt, json_mode=True, max_tokens=2048,
+                                should_stop=progress.cancelled)
+            try:
+                blueprints.append(normalise_blueprint(parse_json(reply), paper))
+                break
+            except ValueError:
+                continue
+    if not blueprints:
+        progress.warn(f"could not parse analysis of {paper.path.name}; using detected structure")
+        result = fallback_blueprint(paper)
+    elif len(blueprints) == 1:
+        result = blueprints[0]
+    else:
+        result = merge_blueprints(blueprints)
+    chapters = list(dict.fromkeys(q.section for q in paper.questions if q.section))
+    return {**result, "pages": paper.page_count, "parts": len(parts),
+            "questions_found": len(paper.questions), "chapters": chapters}
 
 
 def merge_blueprints(blueprints: list[dict]) -> dict:
@@ -224,6 +303,7 @@ def merge_blueprints(blueprints: list[dict]) -> dict:
         "topic_counts": dict(topics.most_common()),
         "subject": most_common("subject") or "",
         "level": most_common("level") or "",
+        "total_marks": most_common("total_marks"),
         "duration_minutes": most_common("duration_minutes"),
         "instructions": layout["instructions"],
         "topics": [t for t, _ in topics.most_common()],
@@ -233,28 +313,39 @@ def merge_blueprints(blueprints: list[dict]) -> dict:
 
 
 def analyse_papers(client, papers: list[Source], max_chars: int = 12000,
-                   progress: Progress | None = None, steps: "_Steps | None" = None) -> dict:
+                   progress: Progress | None = None, steps: "_Steps | None" = None,
+                   language: str = "") -> dict:
     """Analyse past papers one by one; returns {"merged": blueprint, "papers": [...]}."""
     progress = progress or Progress()
-    steps = steps or _Steps(progress, len(papers))
+    steps = steps or _Steps(progress, analysis_steps(papers, max_chars))
     per_paper = []
     for s in papers:
-        steps(f"Analysing {s.title}")
-        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress)})
+        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress, steps,
+                                                           language)})
     return {"merged": merge_blueprints(per_paper), "papers": per_paper}
+
+
+def analysis_steps(papers: list[Source], max_chars: int) -> int:
+    return sum(len(paper_parts(s.paper, max_chars)) for s in papers)
 
 
 # --- Source notes --------------------------------------------------------------------------
 
 def _chunks(text: str, size: int, limit: int = 3) -> list[str]:
-    return [text[i:i + size] for i in range(0, min(len(text), size * limit), size)] or [""]
+    """Up to `limit` chunks of `size` characters, spread evenly over the whole text."""
+    starts = list(range(0, len(text), size))
+    if len(starts) > limit:
+        starts = [starts[round(i * (len(starts) - 1) / (limit - 1))] for i in range(limit)] if limit > 1 else [0]
+    return [text[i:i + size] for i in starts] or [""]
 
 
 def summarise_source(client, source: Source, topic: str, max_chars: int,
                      steps: _Steps, progress: Progress, language: str = "en",
                      source_language: str = "auto") -> str:
     notes = []
-    for i, chunk in enumerate(_chunks(source.text, max_chars)):
+    if source_language == "auto" and source.languages:
+        source_language = source.languages
+    for i, chunk in enumerate(_chunks(source.text, max_chars, NOTE_PARTS)):
         steps(f"Reading {source.title}" + (f" (part {i + 1})" if i else ""))
         reply = client.chat(prompts.NOTES_SYSTEM + i18n.write_rule(language, source_language),
                             prompts.NOTES_PROMPT.format(topic=topic or "as in the source",
@@ -302,6 +393,7 @@ def normalise_question(data: dict, want_type: str | None, want_marks: int | None
         "options": options,
         "parts": parts,
         "answer": "", "final_answer": "", "marking_points": [], "accept": "",
+        "diagram": figures.clean_diagram(data.get("diagram")),
     }
 
 
@@ -353,6 +445,7 @@ def _context(request: ExamRequest, info: dict, notes: str, papers: list[Source],
                  if request.instructions else "",
         "language": i18n.lang(request.language),
         "source_language": request.source_language,
+        "diagrams": request.diagrams,
     }
 
 
@@ -367,6 +460,7 @@ def write_questions(client, ctx: dict, batch: dict, avoid: list[str], rng: rando
         count=batch["count"], items=items, topics=", ".join(topics[:15]),
         avoid=("\nDo not repeat these existing questions:\n- "
                + "\n- ".join(a[:150] for a in avoid[-15:]) + "\n") if avoid else "",
+        diagram_rule=figures.DIAGRAM_PROMPT if ctx.get("diagrams", True) else "",
         **{k: ctx[k] for k in ("level", "subject", "topic", "difficulty", "style", "examples",
                                "notes", "extra")})
     for _ in range(2):
@@ -400,14 +494,29 @@ def _question_text(q: dict) -> str:
     return "\n".join(lines)
 
 
+def pictures(client, items: list[dict], label: str = "question") -> tuple[list[bytes], str]:
+    """Pictures attached to items (key "picture": PNG bytes) and a note saying which is which,
+    for models that can see images. Otherwise nothing."""
+    if not getattr(client, "vision", False):
+        return [], ""
+    pairs = [(it["picture"], it.get("number") or it.get("id")) for it in items if it.get("picture")]
+    if not pairs:
+        return [], ""
+    note = ("\n\nPictures of the original printed questions are attached, in this order: "
+            + ", ".join(f"picture {i} = {label} {n}" for i, (_, n) in enumerate(pairs, 1))
+            + ". Use them for diagrams, graphs, tables and symbols the text may have lost.")
+    return [p for p, _ in pairs], note
+
+
 def solve_questions(client, ctx: dict, questions: list[dict], progress: Progress) -> None:
+    images, note = pictures(client, questions)
     prompt = prompts.SOLVE_PROMPT.format(
         level=ctx["level"], subject=ctx["subject"], notes=ctx["notes"][:6000],
-        questions="\n\n".join(_question_text(q) for q in questions))
+        questions="\n\n".join(_question_text(q) for q in questions)) + note
     for _ in range(2):
         system = prompts.SOLVE_SYSTEM + i18n.write_rule(ctx.get("language"), ctx.get("source_language"))
         reply = client.chat(system, prompt, json_mode=True, max_tokens=8192,
-                            should_stop=progress.cancelled)
+                            should_stop=progress.cancelled, **({"images": images} if images else {}))
         try:
             data = parse_json(reply)
         except ValueError:
@@ -441,13 +550,15 @@ def _check_item(q: dict) -> str:
 def verify_questions(client, ctx: dict, questions: list[dict], progress: Progress) -> list[dict]:
     """Second opinion on each question and answer. Fixes wrong answers in place, marks each
     question's "check" as "verified", "corrected" or "flagged", and returns the flagged ones."""
+    images, note = pictures(client, questions)
     prompt = prompts.CHECK_PROMPT.format(
         level=ctx["level"], subject=ctx["subject"], notes=ctx["notes"][:4000],
-        items="\n\n".join(_check_item(q) for q in questions))
+        items="\n\n".join(_check_item(q) for q in questions)) + note
     system = prompts.CHECK_SYSTEM + i18n.write_rule(ctx.get("language"), ctx.get("source_language"))
     for _ in range(2):
         reply = client.chat(system, prompt, json_mode=True, max_tokens=8192,
-                            should_stop=progress.cancelled, think=True)
+                            should_stop=progress.cancelled, think=True,
+                            **({"images": images} if images else {}))
         try:
             data = parse_json(reply)
         except ValueError:
@@ -552,11 +663,12 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
     if request.structure == "match" and not papers:
         progress.warn("No past papers found, so the custom question plan is used instead")
 
-    note_steps = sum(len(_chunks(s.text, request.max_chars)) for s in materials)
-    steps = _Steps(progress, len(papers) * need_analysis + note_steps + 2)
+    note_steps = sum(len(_chunks(s.text, request.max_chars, NOTE_PARTS)) for s in materials)
+    steps = _Steps(progress, (analysis_steps(papers, request.max_chars) if need_analysis else 0)
+                   + note_steps + 2)
 
     if need_analysis:
-        analysis = analyse_papers(client, papers, request.max_chars, progress, steps)
+        analysis = analyse_papers(client, papers, request.max_chars, progress, steps, request.language)
     blueprint = (analysis or {}).get("merged")
 
     notes = [summarise_source(client, s, request.topic or request.subject, request.max_chars,
@@ -573,6 +685,8 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
     mix = difficulty_mix(request, blueprint)
     info["difficulty_text"] = _difficulty_text(mix, request.challenge, blueprint)
     ctx = _context(request, info, notes_text, papers, rng)
+    if request.source_language == "auto":
+        ctx["source_language"] = ",".join(source_languages(sources)) or "auto"
     sections = (_plan_sections(request, blueprint if use_papers else None)
                 or _plan_sections(ExamRequest(), None))
     # Give every question a target level, easiest first within each section.
@@ -607,6 +721,7 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
                 progress.warn("Rewriting question(s) " + ", ".join(str(q["number"]) for q in flagged)
                               + " that failed the check")
                 _replace_flagged(client, ctx, questions, flagged, rng, progress)
+    fix_language(client, ctx, questions, progress)
     progress.step(steps.total, steps.total, "Done")
 
     total = sum(q["marks"] for q in questions)
@@ -660,8 +775,71 @@ def regenerate_question(client, exam: dict, number: int, progress: Progress | No
     solve_questions(client, ctx, [q], progress)
     if exam.get("verified", True):
         verify_questions(client, ctx, [q], progress)
+    fix_language(client, ctx, [q], progress)
     exam["questions"] = [q if x["number"] == number else x for x in exam["questions"]]
     return q
+
+
+_TRANSLATABLE = ("question", "answer", "final_answer", "accept")
+
+
+def _language_text(q: dict) -> str:
+    return "\n".join([q.get("question", ""), *q.get("options", []),
+                      *(p["text"] for p in q.get("parts", [])), q.get("answer", ""),
+                      q.get("final_answer", ""), *(p["point"] for p in q.get("marking_points", []))])
+
+
+def fix_language(client, ctx: dict, questions: list[dict], progress: Progress) -> list[dict]:
+    """Translate questions (and their answers) that came out in the wrong language.
+
+    Sources in other languages sometimes leak into the output, especially with small
+    models. Returns the questions that were translated."""
+    code = ctx.get("language") or "en"
+    wrong = [q for q in questions if i18n.clearly_not_in(_language_text(q), code)]
+    fixed = []
+    for start in range(0, len(wrong), SOLVE_BATCH):
+        batch = wrong[start:start + SOLVE_BATCH]
+        items = [{"n": q["number"], **{k: q.get(k, "") for k in _TRANSLATABLE},
+                  "options": q.get("options", []),
+                  "parts": [{"label": p["label"], "text": p["text"]} for p in q.get("parts", [])],
+                  "marking_points": [{"point": p["point"], "marks": p["marks"]}
+                                     for p in q.get("marking_points", [])]} for q in batch]
+        prompt = prompts.TRANSLATE_PROMPT.format(language=i18n.LANGUAGES[i18n.lang(code)]["prompt"],
+                                                 items=json.dumps(items, ensure_ascii=False, indent=1))
+        try:
+            data = parse_json(client.chat(prompts.TRANSLATE_SYSTEM, prompt, json_mode=True,
+                                          max_tokens=8192, should_stop=progress.cancelled))
+        except ValueError:
+            continue
+        rows = data.get("items") if isinstance(data, dict) else None
+        by_n = {_as_int(r.get("n")): r for r in rows or [] if isinstance(r, dict)}
+        for q in batch:
+            r = by_n.get(q["number"])
+            if not r:
+                continue
+            fixed.append(q)
+            for key in _TRANSLATABLE:
+                if _text(r.get(key)) and q.get(key):
+                    q[key] = _text(r.get(key))
+            if isinstance(r.get("options"), list) and len(r["options"]) == len(q.get("options", [])):
+                q["options"] = [_text(o) for o in r["options"]]
+            parts = r.get("parts")
+            if isinstance(parts, list) and len(parts) == len(q.get("parts", [])):
+                for p, new in zip(q["parts"], parts):
+                    if isinstance(new, dict) and _text(new.get("text")):
+                        p["text"] = _text(new.get("text"))
+            points = r.get("marking_points")
+            if isinstance(points, list) and len(points) == len(q.get("marking_points", [])):
+                for p, new in zip(q["marking_points"], points):
+                    if isinstance(new, dict) and _text(new.get("point")):
+                        p["point"] = _text(new.get("point"))
+    if fixed:
+        progress.warn(f"Translated question(s) {', '.join(str(q['number']) for q in fixed)} into "
+                      f"{i18n.LANGUAGES[i18n.lang(code)]['label']}: they came out in another language")
+    if len(fixed) < len(wrong):
+        progress.warn("Question(s) " + ", ".join(str(q["number"]) for q in wrong if q not in fixed)
+                      + " may not be in the chosen language: the translation failed")
+    return fixed
 
 
 def renumber(exam: dict) -> None:
@@ -679,6 +857,8 @@ def _br(text: str) -> str:
 
 def _paper_question(q: dict) -> list[str]:
     out = [f"**{q['number']}.** {_br(q['question'])} **[{q['marks']}]**", ""]
+    if q.get("diagram"):
+        out += [f"![Diagram for question {q['number']}](diagram-{q['number']}.png)", ""]
     if q["options"]:
         out += ["  \n".join(f"{chr(65 + i)}. {o}" for i, o in enumerate(q["options"])), ""]
     for p in q["parts"]:
