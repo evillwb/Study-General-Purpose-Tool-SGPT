@@ -22,6 +22,7 @@
       <button class="nav-link" data-view="bank" type="button">Question bank</button>
       <button class="nav-link" data-view="ocr" type="button">OCR</button>
       <button class="nav-link" data-view="convert" type="button">Convert</button>
+      <button class="nav-link" data-view="media" type="button">Download</button>
     </nav>
     <div class="top-actions">
       <button id="status" class="status" type="button" title="AI settings">
@@ -370,6 +371,69 @@
       <div id="bank-chips" class="bank-chips"></div>
       <div id="bank-list" class="questions"></div>
     </div>
+  </main>
+
+  <!-- ============ DOWNLOAD (video / audio) ============ -->
+  <main id="view-media" class="media-view" hidden>
+    <div class="media-main">
+      <div class="media-hero">
+        <h1>Download video and audio</h1>
+        <p class="muted">YouTube and over a thousand other sites. Saved on this computer.</p>
+        <details class="media-sites"><summary>supported sites</summary><p id="media-sites" class="hint"></p></details>
+      </div>
+      <div class="media-input">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        <input id="media-url" type="url" placeholder="paste the link here" autocomplete="off" spellcheck="false" aria-label="Link to the video">
+        <button id="media-clear" class="icon-btn" type="button" aria-label="Clear" hidden>✕</button>
+        <button id="media-go" class="btn primary" type="button" aria-label="Download">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="media-row">
+        <div id="media-modes" class="segmented media-modes" role="radiogroup" aria-label="What to download">
+          <label><input type="radio" name="media-mode" value="auto" checked><span>✨ auto</span></label>
+          <label><input type="radio" name="media-mode" value="audio"><span>♫ audio</span></label>
+          <label><input type="radio" name="media-mode" value="mute"><span>🔇 mute</span></label>
+        </div>
+        <button id="media-paste" class="btn" type="button">📋 paste</button>
+      </div>
+      <p id="media-mode-hint" class="hint center"></p>
+      <p id="media-missing" class="note warn" hidden>The downloader is not installed. In a terminal, run
+        <code>pip install yt-dlp imageio-ffmpeg</code> inside the app's <code>.venv</code>, then restart.</p>
+
+      <div id="media-progress" class="panel media-progress" hidden>
+        <img id="media-thumb" alt="" hidden>
+        <div class="media-progress-main">
+          <div class="item-name" id="media-title">Getting ready…</div>
+          <div class="progress-meta"><span id="media-msg"></span><span class="meta-right"><span id="media-time"></span><button id="media-cancel" class="btn small" type="button">Stop</button></span></div>
+          <div class="bar"><div id="media-fill"></div></div>
+        </div>
+      </div>
+
+      <div class="media-extra">
+        <button id="media-subs" class="btn ghost small" type="button"
+          title="Save the video's subtitles as a text file in your exam sources, to make notes, flashcards or an exam from it">📝 Use this video's subtitles as a study source</button>
+      </div>
+
+      <section id="media-results" class="panel" hidden>
+        <div class="panel-head">
+          <h2 class="panel-title">Downloads</h2>
+          <button id="media-clear-all" class="btn small danger" type="button">Delete all</button>
+        </div>
+        <ul id="media-list" class="file-list"></ul>
+      </section>
+      <p class="hint center legal">Only download videos you own or have permission to save (for example your own
+        uploads or Creative Commons videos). Respect each site's terms and copyright.</p>
+    </div>
+
+    <aside class="panel media-settings" aria-label="Download settings">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-media-tab="video" role="tab" type="button">🎬 video</button>
+        <button class="tab" data-media-tab="audio" role="tab" type="button">🎧 audio</button>
+        <button class="tab" data-media-tab="other" role="tab" type="button">⚙ other</button>
+      </div>
+      <div id="media-settings-body"></div>
+    </aside>
   </main>
 
   <!-- ============ CONVERT ============ -->

@@ -25,7 +25,7 @@ from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
 from . import bank as qbank
-from . import convert, ocr, study
+from . import convert, media, ocr, study
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
 from .providers import (PROVIDERS, SEARCH_ENGINES, config_path, make_client, mask_key,
@@ -36,7 +36,7 @@ from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_f
 
 WEB_DIR = Path(__file__).parent / "web"
 CACHE_VERSION = 2  # bump when analysis or question-bank results change shape, to redo them
-LOCAL_JOBS = {"ocr", "convert"}  # don't use the AI, so they can run alongside an AI job
+LOCAL_JOBS = {"ocr", "convert", "media", "transcript"}  # don't use the AI, so they can run alongside an AI job
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()-]+")
 _EXAM_ID = re.compile(r"^[a-f0-9]{6,32}$")
 
@@ -170,6 +170,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         engine, key = search_settings()
         return jsonify(
             ocr=ocr.available(),
+            media={"available": media.available(), "ffmpeg": bool(media.ffmpeg()),
+                   "qualities": [[q, media.QUALITY_LABELS[q]] for q in media.QUALITIES],
+                   "sites": media.SITES, "browsers": media.BROWSERS,
+                   "defaults": media.DEFAULTS},
             convert={"targets": convert.TARGETS, "libreoffice": bool(convert.libreoffice()),
                      "office": sorted(convert.ms_office()),
                      "inputs": sorted(convert.INPUTS)},
@@ -772,6 +776,106 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             config_path().unlink(missing_ok=True)
         jobs.clear()
         return jsonify(ok=True)
+
+    # --- Video and audio downloader (yt-dlp, cobalt-style settings) ----------------------
+    downloads_dir = output_dir / "downloads"
+
+    def download_info(path: Path) -> dict:
+        job_id = path.parent.name
+        return {"job": job_id, "name": path.name, "size": path.stat().st_size,
+                "created": path.stat().st_mtime, "url": f"/api/downloads/{job_id}/{quote(path.name)}"}
+
+    def download_path(job_id: str, name: str) -> Path:
+        if not re.match(r"^[a-f0-9]{12}$", job_id):
+            abort(404, "Not found")
+        path = downloads_dir / job_id / Path(name).name
+        if not path.is_file():
+            abort(404, "Not found")
+        return path
+
+    def media_url(data: dict) -> str:
+        url = str(data.get("url") or "").strip()
+        if not re.match(r"^https?://\S+$", url):
+            abort(400, "Paste a link that starts with http:// or https://")
+        if not media.available():
+            abort(400, "The downloader is not installed: pip install yt-dlp imageio-ffmpeg")
+        return url
+
+    @app.post("/api/media/download")
+    def media_download():
+        data = request.get_json(force=True) or {}
+        url = media_url(data)
+        job = Job("media")
+        out = downloads_dir / job.id
+
+        def work(job: Job):
+            def progress(fraction, message, meta):
+                job.step(int(fraction * 1000), 1000, message)
+                job.result = {"meta": meta}
+            try:
+                got = media.download(url, data.get("settings") or {}, out, progress=progress,
+                                     should_stop=job.cancelled)
+            except media.MediaError as exc:
+                shutil.rmtree(out, ignore_errors=True)
+                raise RuntimeError(str(exc)) from None
+            except InterruptedError:
+                shutil.rmtree(out, ignore_errors=True)
+                raise
+            for leftover in out.iterdir():  # subtitle files etc. already embedded
+                if leftover != got["file"]:
+                    leftover.unlink(missing_ok=True)
+            job.result = {"meta": {k: v for k, v in got.items() if k != "file"}, "file": download_info(got["file"])}
+            job.step(1000, 1000, "Done")
+
+        return start_job(job, work)
+
+    @app.post("/api/media/transcript")
+    def media_transcript():
+        """Save a video's subtitles as a text file in the library, to use as a source."""
+        data = request.get_json(force=True) or {}
+        url = media_url(data)
+
+        def work(job: Job):
+            job.step(0, 1, "Getting the subtitles…")
+            try:
+                title, text = media.transcript(url, str(data.get("language") or "en"))
+            except media.MediaError as exc:
+                raise RuntimeError(str(exc)) from None
+            name = _SAFE_NAME.sub("_", f"{title} (subtitles).txt").strip(" .")[:150]
+            (library_dir / name).write_text(f"{title}\n{url}\n\n{text}\n", encoding="utf-8")
+            job.result = {"name": name, "chars": len(text)}
+            job.step(1, 1, "Done")
+
+        return start_job(Job("transcript"), work)
+
+    @app.get("/api/downloads")
+    def list_downloads():
+        files = [p for p in downloads_dir.glob("*/*") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify([download_info(p) for p in files])
+
+    @app.get("/api/downloads/<job_id>/<path:name>")
+    def downloaded_file(job_id, name):
+        path = download_path(job_id, name)
+        return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.delete("/api/downloads/<job_id>/<path:name>")
+    def delete_download(job_id, name):
+        path = download_path(job_id, name)
+        path.unlink()
+        if not any(path.parent.iterdir()):
+            path.parent.rmdir()
+        return jsonify(ok=True)
+
+    @app.delete("/api/downloads")
+    def delete_all_downloads():
+        busy = {j.id for j in jobs.values() if j.kind == "media" and j.state == "running"}
+        removed = 0
+        for folder in downloads_dir.glob("*"):
+            if folder.is_dir() and folder.name not in busy:
+                removed += sum(1 for p in folder.iterdir() if p.is_file())
+                shutil.rmtree(folder, ignore_errors=True)
+        return jsonify(ok=True, removed=removed)
 
     # --- OCR only ------------------------------------------------------------------------
     @app.post("/api/ocr")

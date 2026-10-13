@@ -24,6 +24,7 @@ checked and cleaned in code.
 | `bank.py` | Question bank: extracts every past-paper question, finds the chapters, rates difficulty 1–10, and picks the hardest per chapter. |
 | `study.py` | Notes (8 styles, including the chapter-by-chapter study guide), flashcards, vocabulary, MCQ quizzes and grammar tests. |
 | `convert.py` | File conversion and Word/PDF/HTML export, keeping the original look: Microsoft Office (Windows) or LibreOffice when installed, pdf2docx for PDF → Word, mammoth for Word → PDF without either. Also `python -m sgpt.convert`. |
+| `media.py` | Video and audio downloads with yt-dlp and ffmpeg (imageio-ffmpeg): cobalt-style settings → yt-dlp format strings, file names, GIF conversion, subtitles as text. |
 | `layout.py` | Rebuilds scanned pages with OCR text at the same place and size and diagrams cut out as pictures, so scans → Word keep their layout. |
 | `snapshots.py` | Cuts a picture of each past-paper question out of its page for the question bank (diagrams and symbols exactly as printed). |
 | `providers.py`, `ollama_client.py` | AI providers: Ollama, OpenAI-compatible APIs and Anthropic Claude (official SDK), behind one `chat()` interface. |

@@ -100,6 +100,24 @@ recognised in past papers.
 | Scanned PDF or photo → PDF (OCR page, or "Searchable PDF") | The original pages, untouched, with hidden text behind them so you can search, select and copy. |
 | Old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint, Excel | Need Microsoft Office or LibreOffice. |
 
+## 6. Downloading video and audio
+
+The **Download** page uses [yt-dlp](https://github.com/yt-dlp/yt-dlp) with ffmpeg built in, so
+MP3 conversion and merging HD video with its sound need nothing else installed. Paste a link,
+choose **auto** (video with sound), **audio** or **mute**, and press the arrow. The settings
+panel works like cobalt's: video quality, codec (h264 / av1 / vp9), container, audio format and
+bitrate, dub and subtitle language, filename style, file metadata, h265 and X/Twitter GIFs.
+
+- **Sites that need you to be signed in** (Instagram, Facebook, age-restricted YouTube): sign in
+  to the site in your browser, then pick that browser under *other → sign-in cookies*. The
+  cookies are read on your computer only. Firefox works best; close Chrome or Edge first.
+- **Downloads suddenly fail** on a site: sites change often. Update yt-dlp with
+  `pip install -U yt-dlp` inside `.venv`, or get the newest SGPT.exe (rebuilt every week).
+- **Study from a video:** *Use this video's subtitles as a study source* saves the subtitles as a
+  text file in your sources, for notes, flashcards or an exam.
+
+Only download videos you own or have permission to save, and respect each site's terms.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -115,6 +133,8 @@ recognised in past papers.
 | Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
 | Something is taking too long | Every job has a **Stop** button and shows the time left. Jobs running on another page appear in the bottom-right corner, with Stop. |
 | Start again from nothing | **Settings → Your data → Delete all data** removes uploads, exams, study sets, converted files, the question bank and caches (and, if ticked, your settings and API keys). |
+| A download says the site wants you to sign in | Download settings → other → sign-in cookies: choose the browser where you're signed in (Firefox works best). |
+| Downloads from a site stopped working | `pip install -U yt-dlp` inside `.venv`, or download the newest SGPT.exe. |
 | Port already in use | `python -m sgpt.app --port 8800` |
 | "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
 | "The system cannot find the path specified" from `start-sgpt.bat` | Extract the ZIP first (right-click → Extract All) and run the launcher from the extracted folder. If it still happens, delete the `.venv` folder and run it again, or use SGPT.exe. |

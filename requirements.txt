@@ -8,3 +8,5 @@ pdf2docx>=0.5        # PDF -> Word keeping the layout
 anthropic>=1.0       # only needed for the Anthropic Claude provider
 mammoth>=1.6         # Word -> PDF keeping tables and pictures when no Office/LibreOffice
 pywin32>=306; sys_platform == "win32"   # Word/PowerPoint/Excel -> PDF with Microsoft Office
+yt-dlp>=2025.1       # video/audio downloader (YouTube and 1,000+ sites)
+imageio-ffmpeg>=0.5  # ffmpeg for merging video/audio and converting to MP3 etc.

@@ -741,6 +741,8 @@ function showView(view) {
   $("#view-convert").hidden = view !== "convert";
   $("#view-bank").hidden = view !== "bank";
   $("#view-study").hidden = view !== "study";
+  $("#view-media").hidden = view !== "media";
+  if (view === "media") renderMediaPage();
   if (view === "study") { loadStudyRecent(); renderStudyForm(); }
   if (view === "bank") loadBank();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
@@ -1422,12 +1424,187 @@ async function deleteAllData() {
   setTimeout(() => location.reload(), 800);
 }
 
+// ---------- Download (video / audio), cobalt-style -------------------------------------
+const mediaState = { jobId: null, timer: null, tab: "video" };
+const MEDIA_LANGS = [["en", "English"], ["zh", "中文"], ["ms", "Bahasa Melayu"], ["ta", "தமிழ்"], ["hi", "हिन्दी"],
+  ["ja", "日本語"], ["ko", "한국어"], ["id", "Bahasa Indonesia"], ["es", "Español"], ["fr", "Français"], ["de", "Deutsch"],
+  ["ar", "العربية"], ["pt", "Português"], ["ru", "Русский"]];
+const MODE_HINTS = { auto: "Video with sound.", audio: "Only the sound, e.g. as MP3.", mute: "Video without sound." };
+
+function mediaSettings() { return { ...state.meta.media.defaults, ...store.get("media", {}) }; }
+function setMediaSetting(key, value) { store.set("media", { ...store.get("media", {}), [key]: value }); renderMediaSettings(); }
+
+function mediaSpec() {
+  const s = mediaSettings();
+  return {
+    video: [
+      { key: "quality", title: "video quality", options: state.meta.media.qualities,
+        desc: "if preferred video quality isn't available, next best is picked instead." },
+      { key: "codec", title: "preferred youtube video codec", options: [["h264", "h264 (mp4)"], ["av1", "av1 (webm)"], ["vp9", "vp9 (webm)"]],
+        desc: { h264: "h264: best compatibility, average quality. max quality is 1080p.",
+          av1: "av1: best quality, small file size. most supported resolutions.",
+          vp9: "vp9: same quality as av1, but the file is about 2x bigger. most supported resolutions." }[s.codec] },
+      { key: "container", title: "file container", options: [["auto", "auto"], ["mp4", "mp4"], ["webm", "webm"], ["mkv", "mkv"]],
+        desc: "when \"auto\" is selected, the best container is picked automatically for the chosen codec." },
+      { key: "allow_h265", title: "high efficiency video codec", toggle: "allow h265 for videos",
+        desc: "allows downloading videos from platforms like tiktok in higher quality at cost of compatibility." },
+      { key: "twitter_gif", title: "twitter/x", toggle: "convert looping videos to GIF",
+        desc: "GIF conversion is inefficient, converted file may be big and low quality." },
+    ],
+    audio: [
+      { key: "audio_format", title: "audio format", options: ["best", "mp3", "ogg", "wav", "opus"].map((f) => [f, f]),
+        desc: "all formats but \"best\" are converted from the source format, there will be some quality loss." },
+      { key: "bitrate", title: "audio bitrate", options: ["320", "256", "128", "96", "64", "8"].map((b) => [b, `${b}kb/s`]),
+        desc: "bitrate is applied only when converting audio to a lossy format (mp3, ogg, opus)." },
+      { key: "dub", title: "youtube audio track", select: [["original", "original"], ...MEDIA_LANGS],
+        desc: "a dubbed audio track in this language is used if the video has one." },
+    ],
+    other: [
+      { key: "subtitles", title: "subtitles", select: [["none", "none"], ["auto", "all available"], ...MEDIA_LANGS],
+        desc: "subtitles in this language are added to the video file if they're available." },
+      { key: "filename", title: "filename style", options: ["classic", "basic", "pretty", "nerdy"].map((f) => [f, f]),
+        desc: { classic: "youtube_dQw4w9WgXcQ_1920x1080_h264.mp4", basic: "Video Title (1080p, h264).mp4",
+          pretty: "Video Title (1080p, h264, youtube).mp4", nerdy: "Video Title (1080p, h264, youtube, dQw4w9WgXcQ).mp4" }[s.filename] },
+      { key: "no_metadata", title: "file metadata", toggle: "disable file metadata",
+        desc: "title, artist, and other info will not be added to the file." },
+      { key: "cookies", title: "sign-in cookies", select: state.meta.media.browsers.map((b) => [b, b === "none" ? "don't use" : b]),
+        desc: "for videos that need you to be signed in (Instagram, Facebook, age-restricted YouTube): sign in to the site in this browser. Cookies are read on this computer only and never sent anywhere else. Firefox works best." },
+    ],
+  };
+}
+
+function renderMediaSettings() {
+  const s = mediaSettings();
+  $$("[data-media-tab]").forEach((t) => t.classList.toggle("active", t.dataset.mediaTab === mediaState.tab));
+  $("#media-settings-body").replaceChildren(...mediaSpec()[mediaState.tab].map((row) => el("div", { class: "media-setting" },
+    el("h3", {}, row.title),
+    row.options && el("div", { class: "segmented wrap-auto", role: "radiogroup", "aria-label": row.title },
+      row.options.map(([value, label]) => el("label", {},
+        el("input", { type: "radio", name: `media-${row.key}`, value, checked: String(s[row.key]) === value,
+          onchange: () => setMediaSetting(row.key, value) }), el("span", {}, label)))),
+    row.select && el("select", { "aria-label": row.title, onchange: (e) => setMediaSetting(row.key, e.target.value) },
+      row.select.map(([value, label]) => el("option", { value, selected: s[row.key] === value }, label))),
+    row.toggle && el("label", { class: "check" }, el("input", { type: "checkbox", checked: Boolean(s[row.key]),
+      onchange: (e) => setMediaSetting(row.key, e.target.checked) }), row.toggle),
+    el("p", { class: "hint" }, row.desc))));
+}
+
+function mediaMode() { return $("input[name=media-mode]:checked").value; }
+
+function renderMediaPage() {
+  const m = state.meta.media;
+  $("#media-missing").hidden = m.available;
+  $("#media-sites").textContent = m.sites.join(" · ") + " · and many more";
+  $("#media-mode-hint").textContent = MODE_HINTS[mediaMode()];
+  $("#media-clear").hidden = !$("#media-url").value;
+  $("#media-go").disabled = !m.available || Boolean(mediaState.jobId);
+  renderMediaSettings();
+  loadDownloads();
+}
+
+async function startMediaDownload() {
+  const url = $("#media-url").value.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return toast("Paste a link that starts with http:// or https://");
+  if (mediaState.jobId) return toast("Please wait for the current download to finish.");
+  store.set("mediaMode", mediaMode());
+  let job;
+  try { job = await api("/api/media/download", { json: { url, settings: { ...mediaSettings(), mode: mediaMode() } } }); }
+  catch (e) { return toast(e.message); }
+  mediaState.jobId = job.id;
+  $("#media-progress").hidden = false;
+  $("#media-thumb").hidden = true;
+  $("#media-title").textContent = "Getting ready…";
+  renderMediaPage();
+  clearInterval(mediaState.timer);
+  mediaState.timer = setInterval(async () => {
+    try { renderMediaJob(await api(`/api/jobs/${mediaState.jobId}`)); } catch { /* retry */ }
+  }, 700);
+}
+
+function renderMediaJob(job) {
+  const meta = job.result?.meta || {};
+  if (meta.title) $("#media-title").textContent = meta.title + (meta.uploader ? ` · ${meta.uploader}` : "");
+  if (meta.thumbnail && $("#media-thumb").src !== meta.thumbnail) { $("#media-thumb").src = meta.thumbnail; $("#media-thumb").hidden = false; }
+  $("#media-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#media-time").textContent = timeText(job);
+  $("#media-fill").style.width = `${Math.max(3, Math.round((job.done / Math.max(job.total, 1)) * 100))}%`;
+  $("#media-cancel").hidden = job.state !== "running";
+  if (job.state === "running") return;
+  clearInterval(mediaState.timer);
+  mediaState.jobId = null;
+  renderMediaPage();
+  if (job.state === "error") return toast(job.error);
+  $("#media-progress").hidden = true;
+  if (job.state === "cancelled") return toast("Download stopped.");
+  const file = job.result?.file;
+  if (file) { el("a", { href: file.url, download: file.name }).click(); toast(`Saved ${file.name}`); }
+}
+
+async function loadDownloads() {
+  const files = await api("/api/downloads").catch(() => []);
+  $("#media-results").hidden = !files.length;
+  $("#media-list").replaceChildren(...files.map((r) => el("li", {},
+    el("span", { class: `file-icon media ${ext(r.name).slice(1)}` }, ext(r.name).slice(1, 5)),
+    el("div", { class: "item-main" }, el("div", { class: "item-name", title: r.name }, r.name),
+      el("div", { class: "item-sub" }, `${r.size > 1048576 ? (r.size / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(r.size / 1024)) + " KB"} · ${new Date(r.created * 1000).toLocaleString()}`)),
+    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Save"),
+    el("button", { class: "btn small ghost", type: "button", "aria-label": `Delete ${r.name}`, onclick: async () => {
+      await api(r.url, { method: "DELETE" }).catch((e) => toast(e.message));
+      loadDownloads();
+    } }, "Delete"))));
+}
+
+async function deleteAllDownloads() {
+  if (!confirm("Delete all downloaded files?")) return;
+  const r = await api("/api/downloads", { method: "DELETE" }).catch((e) => toast(e.message));
+  if (r) toast(`Deleted ${plural(r.removed, "file")}.`);
+  loadDownloads();
+}
+
+async function useSubtitles() {
+  const url = $("#media-url").value.trim();
+  if (!/^https?:\/\/\S+$/.test(url)) return toast("Paste the video's link first.");
+  let job;
+  try { job = await api("/api/media/transcript", { json: { url, language: $("#language").value || "en" } }); }
+  catch (e) { return toast(e.message); }
+  toast("Getting the subtitles…");
+  const timer = setInterval(async () => {
+    let j;
+    try { j = await api(`/api/jobs/${job.id}`); } catch { return; }
+    if (j.state === "running") return;
+    clearInterval(timer);
+    if (j.state !== "done") return toast(j.error || "Stopped.");
+    await loadLibrary();
+    toast(`Added “${j.result.name}” to your sources. Use it on the Exam or Study page.`);
+  }, 800);
+}
+
+function initMedia() {
+  $("#media-go").addEventListener("click", startMediaDownload);
+  $("#media-url").addEventListener("keydown", (e) => { if (e.key === "Enter") startMediaDownload(); });
+  $("#media-url").addEventListener("input", () => { $("#media-clear").hidden = !$("#media-url").value; });
+  $("#media-clear").addEventListener("click", () => { $("#media-url").value = ""; $("#media-clear").hidden = true; $("#media-url").focus(); });
+  $("#media-paste").addEventListener("click", async () => {
+    try { $("#media-url").value = (await navigator.clipboard.readText()).trim(); $("#media-clear").hidden = !$("#media-url").value; }
+    catch { toast("Your browser blocked pasting. Press Ctrl+V in the box instead."); $("#media-url").focus(); }
+  });
+  const mode = store.get("mediaMode", "auto");
+  const radio = $(`input[name=media-mode][value=${mode}]`);
+  if (radio) radio.checked = true;
+  $$("input[name=media-mode]").forEach((r) => r.addEventListener("change", () => { store.set("mediaMode", r.value); renderMediaPage(); }));
+  $$("[data-media-tab]").forEach((t) => t.addEventListener("click", () => { mediaState.tab = t.dataset.mediaTab; renderMediaSettings(); }));
+  $("#media-cancel").addEventListener("click", () => mediaState.jobId && stopJob(mediaState.jobId));
+  $("#media-clear-all").addEventListener("click", deleteAllDownloads);
+  $("#media-subs").addEventListener("click", useSubtitles);
+}
+
 // ---------- Jobs on other pages: progress, time left and Stop ---------------------------
 const JOB_PAGES = { generate: "create", analyse: "create", regenerate: "create", bank: "bank", "bank-solve": "bank",
-  study: "study", ask: "study", ocr: "ocr", convert: "convert" };
+  study: "study", ask: "study", ocr: "ocr", convert: "convert", media: "media", transcript: "media" };
 const JOB_NAMES = { generate: "Writing your exam", analyse: "Analysing past papers", regenerate: "Rewriting a question",
   bank: "Sorting the question bank", "bank-solve": "Answering bank questions", study: "Making study material",
-  ask: "Answering your question", ocr: "OCR", convert: "Converting files" };
+  ask: "Answering your question", ocr: "OCR", convert: "Converting files", media: "Downloading",
+  transcript: "Getting subtitles" };
 const dock = { timer: null };
 
 function currentView() { return $(".nav-link.active")?.dataset.view; }
@@ -1506,6 +1683,7 @@ function wire() {
   $("#conv-cancel").addEventListener("click", () => convState.jobId && stopJob(convState.jobId));
   $("#conv-clear").addEventListener("click", deleteAllConverted);
   $("#wipe-all").addEventListener("click", deleteAllData);
+  initMedia();
   pollDock();
   $$("[data-view-link]").forEach((b) => b.addEventListener("click", () => {
     showView(b.dataset.viewLink);
