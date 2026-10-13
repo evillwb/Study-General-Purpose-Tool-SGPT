@@ -1,4 +1,4 @@
-# Editing SGPT in VS Code
+# Editing Study General Purpose Tool (SGPT) in VS Code
 
 You don't need Claude Code to work on this project. It is plain Python plus one HTML page,
 and VS Code is all you need to edit, run, debug and push changes.

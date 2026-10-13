@@ -1,4 +1,4 @@
-# SGPT
+# Study General Purpose Tool (SGPT)
 
 Make a **practice exam paper** with a **model answer paper** and a **step-by-step marking
 scheme** in a few minutes. Give it your past papers, notes, links or pasted text, or just

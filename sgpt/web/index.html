@@ -18,6 +18,7 @@
     <nav class="nav" aria-label="Main">
       <button class="nav-link active" data-view="create" type="button">Create</button>
       <button class="nav-link" data-view="library" type="button">My exams <span id="exam-count" class="count"></span></button>
+      <button class="nav-link" data-view="bank" type="button">Question bank</button>
       <button class="nav-link" data-view="ocr" type="button">OCR</button>
       <button class="nav-link" data-view="convert" type="button">Convert</button>
     </nav>
@@ -227,6 +228,49 @@
       </div>
     </section>
     <div id="ocr-results" class="ocr-results"></div>
+  </main>
+
+  <!-- ============ QUESTION BANK ============ -->
+  <main id="view-bank" class="bank-view" hidden>
+    <div class="exams-head">
+      <div>
+        <h1>Question bank</h1>
+        <p class="muted">Every question from your past-year papers, sorted by chapter, with the hardest ones picked out.</p>
+      </div>
+      <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+    </div>
+    <p id="bank-note" class="note" hidden></p>
+    <div id="bank-progress" class="panel ocr-progress" hidden>
+      <div class="progress-meta"><span id="bank-msg"></span><span id="bank-steps"></span></div>
+      <div class="bar"><div id="bank-fill"></div></div>
+    </div>
+    <div id="bank-body" hidden>
+      <div class="bank-toolbar">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-bank-tab="chapters" role="tab" type="button">By chapter</button>
+          <button class="tab" data-bank-tab="hardest" role="tab" type="button">Hardest per chapter</button>
+        </div>
+        <input id="bank-search" type="search" placeholder="Search questions…">
+        <select id="bank-chapter" aria-label="Chapter"></select>
+        <select id="bank-sort" aria-label="Sort">
+          <option value="paper">Paper order</option>
+          <option value="hard">Hardest first</option>
+          <option value="marks">Most marks first</option>
+        </select>
+        <select id="bank-n" aria-label="How many per chapter" hidden>
+          <option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option>
+        </select>
+        <div class="menu">
+          <button id="bank-export-btn" class="btn" type="button">Export ▾</button>
+          <div id="bank-export" class="menu-list" hidden>
+            <a data-format="docx">Word (.docx)</a><a data-format="pdf">PDF</a><a data-format="md">Markdown</a>
+          </div>
+        </div>
+        <button id="bank-answers" class="btn" type="button">Get answers for these</button>
+      </div>
+      <div id="bank-chips" class="bank-chips"></div>
+      <div id="bank-list" class="questions"></div>
+    </div>
   </main>
 
   <!-- ============ CONVERT ============ -->

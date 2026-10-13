@@ -143,3 +143,28 @@ def test_analysis_is_cached_and_reused(sample_pdf, fake_ai, tmp_path):
     exam = c.get(f"/api/exams/{job['exam_id']}").get_json()
     assert [q["difficulty"] for q in exam["questions"]] == ["easy", "easy", "medium", "hard"]
     assert exam["difficulty_mix"] == {"easy": 50, "medium": 25, "hard": 25}
+
+
+def test_question_bank(sample_pdf, fake_ai, tmp_path):
+    host, _ = fake_ai
+    c = create_app(sample_pdf, tmp_path / "out", host).test_client()
+    assert c.get("/api/bank").get_json()["bank"] is None
+    job = _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])
+    assert job["state"] == "done", job
+    bank = c.get("/api/bank").get_json()["bank"]
+    assert bank["chapters"] == ["Algebra", "Geometry"]
+    by_chapter = {q["number"]: q["chapter"] for q in bank["questions"]}
+    assert by_chapter == {"1": "Algebra", "2": "Algebra", "3": "Algebra", "4": "Geometry"}
+    assert bank["questions"][2]["difficulty"] == 9
+
+    r = c.get("/api/bank/export?view=hardest&n=2&format=md")
+    text = r.data.decode()
+    assert "## Algebra" in text and "difficulty 9/10" in text
+    assert text.index("Q3") < text.index("Q2") and "— Q1 " not in text  # top 2: hardest, then most marks
+    assert "Why it's hard: needs two steps" in text
+    assert c.get("/api/bank/export?view=chapters&format=docx").data[:2] == b"PK"
+
+    job = _wait(c, c.post("/api/bank/solve", json={"ids": ["p1-q3"]}).get_json()["id"])
+    assert job["state"] == "done", job
+    q3 = next(q for q in job["result"]["questions"] if q["id"] == "p1-q3")
+    assert q3["answer"] and q3["check"] in ("verified", "corrected")

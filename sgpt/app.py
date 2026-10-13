@@ -23,6 +23,7 @@ from flask import Flask, Response, abort, jsonify, request, send_file, send_from
 from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
+from . import bank as qbank
 from . import convert, ocr
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
@@ -311,6 +312,81 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             job.step(len(papers), len(papers), "Done")
 
         return start_job(Job("analyse"), work)
+
+    # --- Question bank (all past-year questions, by chapter and difficulty) -------------
+    bank_file = library_dir / ".question_bank.json"
+
+    def cached_bank(papers) -> dict | None:
+        if not papers:
+            return None
+        try:
+            data = json.loads(bank_file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if data.get("key") == papers_key(papers) else None
+
+    def save_bank(papers, bank: dict) -> None:
+        with lock:
+            bank_file.write_text(json.dumps({**bank, "key": papers_key(papers)}, indent=2,
+                                            ensure_ascii=False), encoding="utf-8")
+
+    def public_bank(bank: dict | None):
+        return {k: v for k, v in bank.items() if k != "key"} if bank else None
+
+    @app.get("/api/bank")
+    def get_bank():
+        papers = selected_papers()
+        return jsonify(papers=[s.title for s in papers], bank=public_bank(cached_bank(papers)))
+
+    @app.post("/api/bank/build")
+    def build_bank():
+        s = request.get_json(force=True) or {}
+        c, _ = client_from(s)
+
+        def work(job: Job):
+            c.check_model()
+            papers = selected_papers(job.warn)
+            if not papers:
+                raise RuntimeError("No past papers selected. Add PDFs and mark them as past papers.")
+            analysis = (cached_analysis(papers) or {}).get("merged") or {}
+            bank = qbank.build_bank(c, papers, subject=s.get("subject") or analysis.get("subject") or "",
+                                    topics=analysis.get("topics") or [], progress=job)
+            save_bank(papers, bank)
+            job.result = bank
+
+        return start_job(Job("bank"), work)
+
+    @app.post("/api/bank/solve")
+    def solve_bank():
+        s = request.get_json(force=True) or {}
+        c, _ = client_from(s)
+        ids = [str(i) for i in s.get("ids") or []][:60]
+        if not ids:
+            abort(400, "Choose some questions")
+
+        def work(job: Job):
+            c.check_model()
+            papers = selected_papers()
+            bank = cached_bank(papers)
+            if not bank:
+                raise RuntimeError("Build the question bank first.")
+            qbank.solve_bank_questions(c, bank, ids, s.get("language") or "en", progress=job)
+            save_bank(papers, bank)
+            job.result = public_bank(bank)
+            job.step(1, 1, "Done")
+
+        return start_job(Job("bank-solve"), work)
+
+    @app.get("/api/bank/export")
+    def export_bank():
+        bank = cached_bank(selected_papers())
+        if not bank:
+            abort(404, "Build the question bank first")
+        view = request.args.get("view", "chapters")
+        per_chapter = max(1, min(int(request.args.get("n") or 10), 100))
+        text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter)
+        title = f"Hardest {per_chapter} questions per chapter" if view == "hardest" else "Questions by chapter"
+        return download(text, request.args.get("format", "md"), title)
 
     # --- Exams ------------------------------------------------------------------------
     def exam_path(exam_id: str) -> Path:

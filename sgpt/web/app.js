@@ -718,6 +718,8 @@ function showView(view) {
   $("#view-library").hidden = view !== "library";
   $("#view-ocr").hidden = view !== "ocr";
   $("#view-convert").hidden = view !== "convert";
+  $("#view-bank").hidden = view !== "bank";
+  if (view === "bank") loadBank();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "library") loadExams();
 }
@@ -780,6 +782,130 @@ async function exportText(markdown, format, title) {
     el("a", { href: url, download: `${title}.${format}` }).click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   } catch (e) { toast(e.message); }
+}
+
+// ---------- Generic job polling ---------------------------------------------------------
+function pollJob(id, onUpdate) {
+  return new Promise((resolve) => {
+    const timer = setInterval(async () => {
+      let job;
+      try { job = await api(`/api/jobs/${id}`); } catch { return; }
+      onUpdate(job);
+      if (job.state !== "running") { clearInterval(timer); resolve(job); }
+    }, 800);
+  });
+}
+
+// ---------- Question bank ------------------------------------------------------------
+const bankState = { bank: null, papers: [], tab: "chapters", chapter: "", busy: false, open: new Set() };
+
+async function loadBank() {
+  const r = await api("/api/bank").catch(() => ({ papers: [], bank: null }));
+  bankState.papers = r.papers;
+  bankState.bank = r.bank;
+  renderBank();
+}
+
+function bankProgress(job) {
+  $("#bank-progress").hidden = job.state !== "running";
+  $("#bank-msg").textContent = job.message;
+  $("#bank-steps").textContent = job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total} · ${formatTime(job.elapsed)}` : "";
+  $("#bank-fill").style.width = `${Math.max(3, Math.round((job.done / Math.max(job.total, 1)) * 100))}%`;
+}
+
+async function runBankJob(path, body) {
+  if (bankState.busy || state.jobId) return toast("Please wait for the current job to finish.");
+  let job;
+  try { job = await api(path, { json: { ...aiPayload(), ...body } }); } catch (e) { return toast(e.message); }
+  bankState.busy = true;
+  renderBank();
+  bankProgress(job);
+  job = await pollJob(job.id, bankProgress);
+  bankState.busy = false;
+  $("#bank-progress").hidden = true;
+  if (job.state === "error") toast(job.error);
+  if (job.state === "done") { bankState.bank = job.result; toast(job.kind === "bank" ? "Questions sorted." : "Answers added."); }
+  renderBank();
+}
+
+function bankVisible() {
+  const b = bankState.bank;
+  const query = $("#bank-search").value.trim().toLowerCase();
+  const sort = $("#bank-sort").value;
+  const n = Number($("#bank-n").value);
+  const match = (q) => (!bankState.chapter || q.chapter === bankState.chapter)
+    && (!query || `${q.text} ${q.topic} ${q.paper}`.toLowerCase().includes(query));
+  const groups = [];
+  for (const chapter of b.chapters) {
+    let qs = b.questions.filter((q) => q.chapter === chapter && match(q));
+    if (bankState.tab === "hardest") {
+      qs = [...qs].sort((x, y) => y.difficulty - x.difficulty || (y.marks || 0) - (x.marks || 0)).slice(0, n);
+    } else if (sort === "hard") qs = [...qs].sort((x, y) => y.difficulty - x.difficulty);
+    else if (sort === "marks") qs = [...qs].sort((x, y) => (y.marks || 0) - (x.marks || 0));
+    if (qs.length) groups.push([chapter, qs]);
+  }
+  return groups;
+}
+
+function renderBank() {
+  const b = bankState.bank;
+  const note = $("#bank-note");
+  $("#bank-build").disabled = bankState.busy || !bankState.papers.length;
+  $("#bank-build").textContent = b ? "Re-sort" : "Sort my past-year questions";
+  note.hidden = Boolean(b) && bankState.papers.length > 0;
+  note.textContent = !bankState.papers.length
+    ? "Add your past-year papers first: on the Create page, under Sources → Files, add PDFs and mark them as “Past paper”."
+    : `${plural(bankState.papers.length, "past paper")} ready: ${bankState.papers.join(", ")}. Click “Sort my past-year questions”.`;
+  $("#bank-body").hidden = !b;
+  if (!b) return;
+  $("#bank-answers").disabled = bankState.busy;
+  $("#bank-n").hidden = bankState.tab !== "hardest";
+  $("#bank-sort").hidden = bankState.tab === "hardest";
+  $$("[data-bank-tab]").forEach((t) => t.classList.toggle("active", t.dataset.bankTab === bankState.tab));
+  const chapterSelect = $("#bank-chapter");
+  if (chapterSelect.options.length !== b.chapters.length + 1) {
+    chapterSelect.replaceChildren(el("option", { value: "" }, "All chapters"), ...b.chapters.map((c) => el("option", { value: c }, c)));
+  }
+  chapterSelect.value = bankState.chapter;
+  const n = $("#bank-n").value;
+  $$("#bank-export a").forEach((a) => (a.href = `/api/bank/export?view=${bankState.tab}&n=${n}&format=${a.dataset.format}`));
+
+  $("#bank-chips").replaceChildren(...b.chapters.map((c) => {
+    const qs = b.questions.filter((q) => q.chapter === c);
+    const avg = qs.reduce((a, q) => a + q.difficulty, 0) / (qs.length || 1);
+    return el("button", { class: `bank-chip${bankState.chapter === c ? " active" : ""}`, type: "button",
+      onclick: () => { bankState.chapter = bankState.chapter === c ? "" : c; renderBank(); } },
+      el("b", {}, c), el("small", {}, `${plural(qs.length, "question")} · avg difficulty ${avg.toFixed(1)}`));
+  }));
+
+  const groups = bankVisible();
+  const nodes = [];
+  for (const [chapter, qs] of groups) {
+    nodes.push(el("div", { class: "section-head" }, el("h3", {}, chapter), el("span", {}, plural(qs.length, "question"))));
+    qs.forEach((q, i) => nodes.push(bankCard(q, bankState.tab === "hardest" ? i + 1 : null)));
+  }
+  if (!nodes.length) nodes.push(el("p", { class: "empty-note" }, "No questions match."));
+  $("#bank-list").replaceChildren(...nodes);
+}
+
+function bankCard(q, rank) {
+  const open = bankState.open.has(q.id);
+  return el("article", { class: "qcard" },
+    el("div", { class: "qhead" },
+      rank && el("span", { class: "rank" }, `#${rank}`),
+      el("span", { class: "qnum" }, `Q${q.number}`),
+      el("span", { class: "tag" }, q.paper),
+      el("span", { class: "tag" }, typeLabel(q.type)),
+      q.topic && el("span", { class: "tag" }, q.topic),
+      q.check && el("span", { class: `tag ${q.check}` }, { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
+      el("span", { class: "qmarks" },
+        el("span", { class: "diff", title: "Difficulty out of 10" }, el("span", { class: "diff-bar" }, el("span", { style: `width:${q.difficulty * 10}%` })), `${q.difficulty}/10`),
+        q.marks ? ` · ${plural(q.marks, "mark")}` : "")),
+    el("div", { class: "qtext", html: fmt(q.text) }),
+    q.reason && el("div", { class: "why" }, (rank ? "Why it's hard: " : "") + q.reason),
+    open && q.answer && answerBlock({ ...q, accept: q.accept || "", marking_points: q.marking_points || [] }),
+    q.answer && el("div", { class: "qfoot" }, el("button", { class: "btn ghost small", type: "button",
+      onclick: () => { open ? bankState.open.delete(q.id) : bankState.open.add(q.id); renderBank(); } }, open ? "Hide answer" : "Show answer")));
 }
 
 // ---------- Convert --------------------------------------------------------------------
@@ -938,6 +1064,20 @@ function wire() {
   ["dragleave", "drop"].forEach((ev) => convDrop.addEventListener(ev, (e) => { e.preventDefault(); convDrop.classList.remove("drag"); }));
   convDrop.addEventListener("drop", (e) => addConvFiles([...e.dataTransfer.files]));
   $("#conv-go").addEventListener("click", () => runConvert(convState.files, convState.target));
+
+  $("#bank-build").addEventListener("click", () => runBankJob("/api/bank/build", { subject: $("#subject").value }));
+  $("#bank-answers").addEventListener("click", () => {
+    const ids = bankVisible().flatMap(([, qs]) => qs).filter((q) => !q.answer).map((q) => q.id).slice(0, 60);
+    if (!ids.length) return toast("These questions already have answers.");
+    if (ids.length > 20 && !confirm(`Write and double-check answers for ${ids.length} questions? This can take a while.`)) return;
+    runBankJob("/api/bank/solve", { ids, language: $("#language").value });
+  });
+  $$("[data-bank-tab]").forEach((t) => t.addEventListener("click", () => { bankState.tab = t.dataset.bankTab; renderBank(); }));
+  ["bank-search", "bank-sort", "bank-n"].forEach((id) => $("#" + id).addEventListener("input", renderBank));
+  $("#bank-chapter").addEventListener("change", (e) => { bankState.chapter = e.target.value; renderBank(); });
+  const bankMenu = $("#bank-export");
+  $("#bank-export-btn").addEventListener("click", (e) => { e.stopPropagation(); bankMenu.hidden = !bankMenu.hidden; });
+  document.addEventListener("click", () => (bankMenu.hidden = true));
 
   $("#generate").addEventListener("click", startGeneration);
   $("#cancel").addEventListener("click", async () => {

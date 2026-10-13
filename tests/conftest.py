@@ -59,6 +59,17 @@ def fake_reply(system: str, prompt: str) -> str:
              "marks": 1 if mcq else 3, "question": f"Solve 2x + {i} = 9 for x.",
              "options": ["A. 1", "B) 2", "3.5", "4"] if mcq else [], "parts": []}
             for i in range(1, count + 1)]})
+    if "knows the syllabus" in system:
+        return json.dumps({"chapters": ["Algebra", "Geometry"]})
+    if "sorting past exam questions" in system:
+        rows = []
+        for qid, text in re.findall(r"\[id: ([^\]]+)\][^\n]*\n([^\n]*)", prompt):
+            algebra = any(w in text for w in ("Solve", "Expand", "pens"))
+            rows.append({"id": qid, "chapter": "Algebra" if algebra else "Geometry",
+                         "topic": "equations" if algebra else "circles", "type": "short",
+                         "difficulty": 9 if "Expand" in text else 4 if algebra else 6,
+                         "reason": "needs two steps" if "Expand" in text else "routine"})
+        return json.dumps({"questions": rows})
     if "independent senior examiner" in system:
         items = re.findall(r"^Question (\d+) \[.*?\n(.*)$", prompt, re.MULTILINE)
         checks = []

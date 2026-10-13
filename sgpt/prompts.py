@@ -169,3 +169,57 @@ Reply with JSON in exactly this shape, one entry per question, in the same order
     }}
   ]
 }}"""
+
+# --- Question bank (sorting past-year questions) ----------------------------------------
+
+BANK_EXTRACT_SYSTEM = (
+    "You split exam papers into their individual questions, copying the wording exactly. "
+    "Reply with JSON only."
+)
+
+BANK_EXTRACT_PROMPT = """Split this exam paper into its numbered questions. Keep each question's sub-parts
+(a), (b)... inside that question. Copy the text exactly; do not answer anything.
+
+Reply with JSON: {{"questions": [{{"number": "1", "text": "full question text", "marks": 4}}]}}
+Use null for marks if they are not shown.
+
+PAPER: {name}
+--------------------------------------------------
+{text}
+--------------------------------------------------"""
+
+BANK_CHAPTERS_SYSTEM = (
+    "You are an experienced teacher who knows the syllabus well. Reply with JSON only."
+)
+
+BANK_CHAPTERS_PROMPT = """These questions come from past {subject} exam papers.
+{hint}
+List the syllabus chapters they cover: between 3 and 15 short chapter names, in the usual
+teaching order. Use the same language as the questions.
+
+Reply with JSON: {{"chapters": ["chapter name", ...]}}
+
+QUESTIONS:
+{questions}"""
+
+BANK_CLASSIFY_SYSTEM = (
+    "You are a senior examiner sorting past exam questions by chapter and rating how hard "
+    "they are for students. Be consistent. Reply with JSON only."
+)
+
+BANK_CLASSIFY_PROMPT = """Chapters: {chapters}
+
+For each question below give:
+- "chapter": exactly one of the chapters above (the one it mainly tests)
+- "topic": the specific sub-topic, a few words
+- "type": mcq | true_false | fill_blank | short | calculation | structured | essay
+- "difficulty": 1 to 10 for a typical student (1-3 recall or one step; 4-6 standard
+  application; 7-8 multi-step, unfamiliar context or careful reasoning; 9-10 the hardest:
+  long chains of reasoning, combining topics, proofs or evaluation). Consider the marks.
+- "reason": one short sentence on what makes it easy or hard
+
+Reply with JSON: {{"questions": [{{"id": "...", "chapter": "...", "topic": "...", "type": "...",
+"difficulty": 7, "reason": "..."}}]}}, one entry per question, same ids.
+
+QUESTIONS:
+{questions}"""
