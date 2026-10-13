@@ -16,13 +16,17 @@ CLASSIFY_BATCH = 8
 
 def _extract(client, paper: Source, progress: Progress) -> list[dict]:
     """Questions of one paper: the detected numbering, or the AI when that finds too few."""
-    found = [{"number": q.number, "text": q.text.strip(), "marks": q.marks}
+    found = [{"number": q.number, "text": q.text.strip(), "marks": q.marks,
+              "section": q.section, "page": q.page}
              for q in paper.paper.questions if len(q.text.strip()) > 10]
-    if len(found) >= 3:
+    # Trust the detected numbering unless it found very few questions for a long file.
+    if len(found) >= 3 and len(found) * 2500 >= len(paper.text):
         return found
     questions = []
     text = paper.text
-    for start in range(0, min(len(text), 36000), 12000):
+    chunks = range(0, len(text), 12000)
+    for n, start in enumerate(chunks, 1):
+        progress.step(0, 1, f"Finding the questions in {paper.title} (part {n} of {len(chunks)})")
         reply = client.chat(prompts.BANK_EXTRACT_SYSTEM,
                             prompts.BANK_EXTRACT_PROMPT.format(name=paper.title,
                                                                text=text[start:start + 12000]),
@@ -34,8 +38,9 @@ def _extract(client, paper: Source, progress: Progress) -> list[dict]:
         for q in data.get("questions") or []:
             if isinstance(q, dict) and len(_text(q.get("text"))) > 10:
                 questions.append({"number": _text(q.get("number")) or str(len(questions) + 1),
-                                  "text": _text(q.get("text")), "marks": _as_int(q.get("marks"))})
-    return questions or found
+                                  "text": _text(q.get("text")), "marks": _as_int(q.get("marks")),
+                                  "section": _text(q.get("chapter")), "page": 0})
+    return questions if len(questions) > len(found) else found
 
 
 def _snippet(q: dict, length: int) -> str:
@@ -51,8 +56,12 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
     questions: list[dict] = []
     for paper in papers:
         progress.step(done, total, f"Finding the questions in {paper.title}")
+        sections: list[str] = []
         for q in _extract(client, paper, progress):
-            questions.append({"id": f"p{papers.index(paper) + 1}-q{q['number']}",
+            if q.get("section") and q["section"] not in sections:
+                sections.append(q["section"])
+            part = f"-s{sections.index(q['section']) + 1}" if q.get("section") else ""
+            questions.append({"id": f"p{papers.index(paper) + 1}{part}-q{q['number']}",
                               "paper": paper.title, **q})
         done += 1
     if not questions:
@@ -172,7 +181,8 @@ def render_bank(bank: dict, view: str = "chapters", per_chapter: int = 10,
         out += [f"## {chapter}", ""]
         for n, q in enumerate(qs, 1):
             marks = f" [{i18n.marks(language, q['marks'])}]" if q.get("marks") else ""
-            out += [f"### {n}. {q['paper']} — Q{q['number']}{marks} · difficulty {q['difficulty']}/10", ""]
+            where = f"{q['paper']} — " + (f"{q['section']}, " if q.get("section") else "") + f"Q{q['number']}"
+            out += [f"### {n}. {where}{marks} · difficulty {q['difficulty']}/10", ""]
             out += ["  \n".join(q["text"].split("\n")), ""]
             if view == "hardest" and q.get("reason"):
                 out += [f"*Why it's hard: {q['reason']}*", ""]

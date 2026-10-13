@@ -15,6 +15,8 @@ class Question:
     number: str
     text: str
     marks: int | None = None
+    section: str = ""  # chapter/paper heading when numbering restarts, e.g. "Bab 3"
+    page: int = 0      # page the question starts on (1-based)
 
 
 @dataclass
@@ -47,6 +49,13 @@ _PAGE_NUMBER = re.compile(
     r"^\s*(?:page|halaman|第)?\s*\d{1,3}\s*(?:页|頁)?(?:\s*(?:of|/|daripada|共)\s*\d{1,3}\s*(?:页|頁)?)?\s*$",
     re.IGNORECASE)
 
+
+# Lines that start a new chapter/paper inside a compiled file, where numbering restarts at 1.
+_SECTION = re.compile(
+    r"(?:\b(?:chapter|bab|unit|topic|topik|section|bahagian|paper|kertas|part|tingkatan|form|"
+    r"year|tahun)\b|第\s*[\d一二三四五六七八九十百]+\s*[章课課单單元回]|\b(?:19|20)\d{2}\b)",
+    re.IGNORECASE)
+_PAGE_MARK = re.compile(r"^\x01(\d+)$")
 
 MIN_PAGE_CHARS = 25  # a page with less selectable text than this is treated as a scan
 CACHE_DIR = ".sgpt-cache"
@@ -133,30 +142,61 @@ def _clean(lines: list[str]) -> str:
 def split_questions(text: str) -> list[Question]:
     """Split paper text into top-level questions.
 
-    Numbers must run in order (1, 2, 3...) so that numbered lists inside a
-    question are not mistaken for new questions.
+    Numbers must run in order (1, 2, 3...) so that numbered lists inside a question are
+    not mistaken for new questions. One missing number is tolerated (OCR can miss one).
+    Numbering may restart at 1 for a new chapter or paper in a compiled file: when a
+    heading such as "Bab 3", "Chapter 2", "第三章" or a year comes just before it, or the
+    "1" is near the top of a page. Lines "\\x01<n>" mark the start of page n.
     """
     questions: list[Question] = []
     current_num: int | None = None
     current_lines: list[str] = []
+    start_page = page = 0
+    section = first_heading = ""
+    recent: list[str] = []      # the last few non-empty lines, to find headings
+    lines_on_page = 0
 
     def flush() -> None:
         if current_num is None:
             return
         body = "\n".join(current_lines).strip()
         marks_found = [int(m) for m in _MARKS.findall(body)]
-        questions.append(Question(str(current_num), body, sum(marks_found) or None))
+        questions.append(Question(str(current_num), body, sum(marks_found) or None, section, start_page))
 
     for line in text.splitlines():
+        mark = _PAGE_MARK.match(line)
+        if mark:
+            page, lines_on_page = int(mark.group(1)), 0
+            continue
         match = _QUESTION_WORD.match(line) or _QUESTION_NUM.match(line)
         if match:
             num = int(match.group(1))
             expected = 1 if current_num is None else current_num + 1
-            if num == expected:
+            heading = next((h for h in reversed(recent[-6:]) if len(h) < 90 and _SECTION.search(h)), "")
+            restart = (num == 1 and current_num is not None and current_num >= 2
+                       and (heading or (start_page < page and lines_on_page <= 8)))
+            skipped = current_num is not None and current_num >= 3 and num == expected + 1
+            if num == expected or restart or skipped:
+                if heading and heading in (ln.strip() for ln in current_lines):
+                    # the heading belongs to the next chapter, not the end of this question
+                    cut = max(i for i, ln in enumerate(current_lines) if ln.strip() == heading)
+                    current_lines = current_lines[:cut]
                 flush()
-                current_num = num
+                if current_num is None:
+                    first_heading = heading
+                if restart:
+                    if not section:  # the file has chapters after all: name the first one too
+                        for q in questions:
+                            q.section = first_heading or "Part 1"
+                    section = heading or f"Part {len({q.section for q in questions}) + 1}"
+                current_num, start_page = num, page
                 current_lines = [match.group(2)] if match.group(2) else []
+                recent = []
+                lines_on_page += 1
                 continue
+        if line.strip():
+            recent.append(line.strip())
+            lines_on_page += 1
         if current_num is not None:
             current_lines.append(line)
     flush()
@@ -165,6 +205,8 @@ def split_questions(text: str) -> list[Question]:
 
 def extract_paper(path: Path, ocr: bool = True) -> ExamPaper:
     pages, ocr_pages = _read_pages(path, ocr)
-    text = _clean([ln for lines in _strip_headers_footers(pages) for ln in lines + [""]])
+    marked = _clean([ln for n, lines in enumerate(_strip_headers_footers(pages), 1)
+                     for ln in [f"\x01{n}"] + lines + [""]])
+    text = re.sub(r"\n{3,}", "\n\n", re.sub(r"^\x01\d+$", "", marked, flags=re.M)).strip()
     title = next((ln.strip() for ln in text.splitlines() if ln.strip()), path.stem)
-    return ExamPaper(path, title[:120], text, len(pages), split_questions(text), ocr_pages)
+    return ExamPaper(path, title[:120], text, len(pages), split_questions(marked), ocr_pages)

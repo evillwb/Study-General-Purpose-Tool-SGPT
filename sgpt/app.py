@@ -33,6 +33,7 @@ from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_f
                       library_meta, load_file, load_library, save_library_meta)
 
 WEB_DIR = Path(__file__).parent / "web"
+CACHE_VERSION = 2  # bump when analysis or question-bank results change shape, to redo them
 LOCAL_JOBS = {"ocr", "convert"}  # don't use the AI, so they can run alongside an AI job
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9._ ()-]+")
 _EXAM_ID = re.compile(r"^[a-f0-9]{6,32}$")
@@ -270,7 +271,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         return [s for s in load_library(library_dir, warn) if s.kind == "paper" and s.paper]
 
     def papers_key(papers) -> str:
-        parts = []
+        parts = [f"v{CACHE_VERSION}"]
         for s in sorted(papers, key=lambda s: s.title):
             stat = (library_dir / s.title).stat()
             parts.append(f"{s.title}|{stat.st_size}|{stat.st_mtime_ns}")
@@ -311,7 +312,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             result = analyse_papers(c, papers, progress=job)
             data = save_analysis(papers, result, c.model)
             job.result = {k: v for k, v in data.items() if k != "key"}
-            job.step(len(papers), len(papers), "Done")
+            job.step(1, 1, "Done")
 
         return start_job(Job("analyse"), work)
 

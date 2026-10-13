@@ -237,3 +237,33 @@ def test_difficulty_targets_and_custom_mix():
     assert difficulty_targets(3, {"easy": 0, "medium": 0, "hard": 100}) == ["hard"] * 3
     assert normalise_mix({"easy": 1, "medium": 1, "hard": 1}) == {"easy": 33, "medium": 34, "hard": 33}
     assert normalise_mix({"easy": 0, "medium": 0, "hard": 0}) is None
+
+
+def test_compiled_chapters_are_all_found_and_analysed(tmp_path):
+    """A 60-page file of every chapter's past-year questions, numbering restarting at 1."""
+    import pymupdf
+
+    from sgpt.generator import MAX_PARTS, analysis_steps, paper_parts
+    from sgpt.sources import Source
+
+    doc = pymupdf.open()
+    for chapter in range(1, 13):
+        for page in range(5):
+            lines = [f"Bab {chapter} Topik {chapter}"] if page == 0 else []
+            for q in range(1, 4):
+                n = page * 3 + q
+                lines.append(f"{n}. Chapter {chapter} question {n}: " + "explain this idea " * 12 + "[4 markah]")
+            doc.new_page().insert_textbox(pymupdf.Rect(40, 40, 560, 800), "\n".join(lines), fontsize=9)
+    doc.save(tmp_path / "all_chapters.pdf")
+
+    paper = extract_paper(tmp_path / "all_chapters.pdf")
+    assert len(paper.questions) == 12 * 15
+    assert paper.questions[-1].section == "Bab 12 Topik 12" and paper.questions[-1].page == 60
+    assert paper.questions[0].section == "Bab 1 Topik 1"
+
+    parts = paper_parts(paper, 12000)
+    assert 1 < len(parts) <= MAX_PARTS
+    joined = "\n".join(parts)
+    assert "=== Bab 12 Topik 12 ===" in joined and "Chapter 12 question 15" in joined  # the end is read too
+    source = Source("paper", "all_chapters.pdf", paper.text, paper=paper)
+    assert analysis_steps([source], 12000) == len(parts)

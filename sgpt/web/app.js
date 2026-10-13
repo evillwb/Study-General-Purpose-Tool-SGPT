@@ -317,6 +317,10 @@ function renderAnalysis() {
       el("h2", {}, "Past paper analysis"),
       el("p", { class: "muted" }, `${a.papers.map((p) => p.name).join(", ")} · analysed by ${a.model}`)),
     el("div", { class: "chips" }, facts.map((f) => el("span", { class: "chip" }, f))),
+    el("p", { class: "hint" }, a.papers.map((p) => p.pages
+      ? `${p.name}: read all ${plural(p.pages, "page")}` + (p.questions_found ? `, ${plural(p.questions_found, "question")}` : "")
+        + (p.chapters?.length > 1 ? ` in ${plural(p.chapters.length, "chapter")}` : "") + (p.parts > 1 ? ` (analysed in ${p.parts} parts)` : "")
+      : p.name).join(" · ")),
     m.difficulty && el("div", {}, el("h3", {}, "Difficulty"), mixBar(m.difficulty, true),
       m.difficulty_notes && el("p", { class: "hint" }, m.difficulty_notes)),
     el("div", {}, el("h3", {}, "Layout"), sectionTable(m.sections)),
@@ -328,7 +332,8 @@ function renderAnalysis() {
       m.style_notes && el("div", {}, el("h3", {}, "Question style"), el("p", {}, m.style_notes))),
     a.papers.length > 1 && el("div", {}, el("h3", {}, "Each paper"), a.papers.map((p) =>
       el("details", {}, el("summary", {}, p.name),
-        p.difficulty && mixBar(p.difficulty), sectionTable(p.sections)))),
+        p.difficulty && mixBar(p.difficulty), sectionTable(p.sections),
+        p.chapters?.length > 1 && el("p", { class: "hint" }, `Chapters: ${p.chapters.join(" · ")}`)))),
     el("div", { class: "analysis-actions" },
       el("button", { class: "btn", type: "button", onclick: () => { $("input[name=structure][value=match]").checked = true; saveBuilder(); updateSources(); toast("The new exam will copy this layout."); } }, "Use this layout"),
       m.difficulty && el("button", { class: "btn", type: "button", onclick: () => { $("input[name=difficulty][value=past]").checked = true; saveBuilder(); renderDifficulty(); toast("The new exam will match this difficulty."); } }, "Use this difficulty"),

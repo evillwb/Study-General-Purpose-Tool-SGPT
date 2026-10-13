@@ -67,6 +67,7 @@ DEFAULT_PLAN = [{"type": "mcq", "count": 5, "marks": 1},
 WRITE_BATCH = 5   # questions per writing call (small models stay accurate on short tasks)
 SOLVE_BATCH = 4   # questions per answer/marking call
 NOTES_LIMIT = 10000
+NOTE_PARTS = 4  # chunks read from each notes source, spread over the whole file
 
 
 class Progress:
@@ -192,17 +193,72 @@ def normalise_mix(value) -> dict | None:
     return mix
 
 
-def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress) -> dict:
-    prompt = prompts.ANALYSE_PROMPT.format(name=paper.path.name, text=paper.text[:max_chars])
-    for _ in range(2):
-        reply = client.chat(prompts.ANALYSE_SYSTEM, prompt, json_mode=True, max_tokens=2048,
-                            should_stop=progress.cancelled)
-        try:
-            return normalise_blueprint(parse_json(reply), paper)
-        except ValueError:
-            continue
-    progress.warn(f"could not parse analysis of {paper.path.name}; using detected structure")
-    return fallback_blueprint(paper)
+MAX_PARTS = 16  # most chunks one paper is analysed in (each is one AI call)
+
+
+def paper_parts(paper: ExamPaper, max_chars: int) -> list[str]:
+    """The whole paper as one or more chunks of at most max_chars, for analysis.
+
+    Short papers are one chunk. For long files (for example every chapter's past-year
+    questions in one PDF) the detected questions are grouped by chapter, shortened if
+    needed so the whole file fits in MAX_PARTS chunks. Without detected questions, the
+    text is cut into chunks spread evenly over the whole file.
+    """
+    text = paper.text
+    if len(text) <= max_chars:
+        return [text]
+    if len(paper.questions) >= 3:
+        budget = max_chars * MAX_PARTS
+        heading_cost = 80 * len({q.section for q in paper.questions})
+        each = max(200, (budget - heading_cost) // len(paper.questions))
+        blocks, section = [], None
+        for q in paper.questions:
+            if q.section != section:
+                section = q.section
+                if section:
+                    blocks.append(f"\n=== {section} ===")
+            body = " ".join(q.text.split())
+            marks = f" [{q.marks} marks]" if q.marks else ""
+            blocks.append(f"{q.number}. {body[:each]}{'…' if len(body) > each else ''}{marks}")
+        parts, current = [], ""
+        for block in blocks:
+            if current and len(current) + len(block) + 1 > max_chars:
+                parts.append(current)
+                current = ""
+            current += block + "\n"
+        return parts + ([current] if current.strip() else [])
+    return _chunks(text, max_chars, MAX_PARTS)
+
+
+def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress,
+                  steps: "_Steps | None" = None) -> dict:
+    parts = paper_parts(paper, max_chars)
+    blueprints = []
+    for i, part in enumerate(parts):
+        if steps:
+            steps(f"Analysing {paper.path.name}" + (f" (part {i + 1} of {len(parts)})" if len(parts) > 1 else ""))
+        note = (f"\n\n(This is part {i + 1} of {len(parts)} of one long file, which may hold several "
+                "papers or chapters. Describe the structure of ONE paper as it appears here, and "
+                "list the topics in this part.)" if len(parts) > 1 else "")
+        prompt = prompts.ANALYSE_PROMPT.format(name=paper.path.name, text=part) + note
+        for _ in range(2):
+            reply = client.chat(prompts.ANALYSE_SYSTEM, prompt, json_mode=True, max_tokens=2048,
+                                should_stop=progress.cancelled)
+            try:
+                blueprints.append(normalise_blueprint(parse_json(reply), paper))
+                break
+            except ValueError:
+                continue
+    if not blueprints:
+        progress.warn(f"could not parse analysis of {paper.path.name}; using detected structure")
+        result = fallback_blueprint(paper)
+    elif len(blueprints) == 1:
+        result = blueprints[0]
+    else:
+        result = merge_blueprints(blueprints)
+    chapters = list(dict.fromkeys(q.section for q in paper.questions if q.section))
+    return {**result, "pages": paper.page_count, "parts": len(parts),
+            "questions_found": len(paper.questions), "chapters": chapters}
 
 
 def merge_blueprints(blueprints: list[dict]) -> dict:
@@ -224,6 +280,7 @@ def merge_blueprints(blueprints: list[dict]) -> dict:
         "topic_counts": dict(topics.most_common()),
         "subject": most_common("subject") or "",
         "level": most_common("level") or "",
+        "total_marks": most_common("total_marks"),
         "duration_minutes": most_common("duration_minutes"),
         "instructions": layout["instructions"],
         "topics": [t for t, _ in topics.most_common()],
@@ -236,25 +293,32 @@ def analyse_papers(client, papers: list[Source], max_chars: int = 12000,
                    progress: Progress | None = None, steps: "_Steps | None" = None) -> dict:
     """Analyse past papers one by one; returns {"merged": blueprint, "papers": [...]}."""
     progress = progress or Progress()
-    steps = steps or _Steps(progress, len(papers))
+    steps = steps or _Steps(progress, analysis_steps(papers, max_chars))
     per_paper = []
     for s in papers:
-        steps(f"Analysing {s.title}")
-        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress)})
+        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress, steps)})
     return {"merged": merge_blueprints(per_paper), "papers": per_paper}
+
+
+def analysis_steps(papers: list[Source], max_chars: int) -> int:
+    return sum(len(paper_parts(s.paper, max_chars)) for s in papers)
 
 
 # --- Source notes --------------------------------------------------------------------------
 
 def _chunks(text: str, size: int, limit: int = 3) -> list[str]:
-    return [text[i:i + size] for i in range(0, min(len(text), size * limit), size)] or [""]
+    """Up to `limit` chunks of `size` characters, spread evenly over the whole text."""
+    starts = list(range(0, len(text), size))
+    if len(starts) > limit:
+        starts = [starts[round(i * (len(starts) - 1) / (limit - 1))] for i in range(limit)] if limit > 1 else [0]
+    return [text[i:i + size] for i in starts] or [""]
 
 
 def summarise_source(client, source: Source, topic: str, max_chars: int,
                      steps: _Steps, progress: Progress, language: str = "en",
                      source_language: str = "auto") -> str:
     notes = []
-    for i, chunk in enumerate(_chunks(source.text, max_chars)):
+    for i, chunk in enumerate(_chunks(source.text, max_chars, NOTE_PARTS)):
         steps(f"Reading {source.title}" + (f" (part {i + 1})" if i else ""))
         reply = client.chat(prompts.NOTES_SYSTEM + i18n.write_rule(language, source_language),
                             prompts.NOTES_PROMPT.format(topic=topic or "as in the source",
@@ -552,8 +616,9 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
     if request.structure == "match" and not papers:
         progress.warn("No past papers found, so the custom question plan is used instead")
 
-    note_steps = sum(len(_chunks(s.text, request.max_chars)) for s in materials)
-    steps = _Steps(progress, len(papers) * need_analysis + note_steps + 2)
+    note_steps = sum(len(_chunks(s.text, request.max_chars, NOTE_PARTS)) for s in materials)
+    steps = _Steps(progress, (analysis_steps(papers, request.max_chars) if need_analysis else 0)
+                   + note_steps + 2)
 
     if need_analysis:
         analysis = analyse_papers(client, papers, request.max_chars, progress, steps)
