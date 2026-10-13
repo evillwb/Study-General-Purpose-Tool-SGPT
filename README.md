@@ -34,7 +34,8 @@ The app opens in your browser. Keep the black window open while you use it; clos
 quit. Your files are kept in `Documents\SGPT`. The first start takes a few seconds.
 
 If Windows shows "Windows protected your PC", click **More info → Run anyway**. This
-appears because the .exe is not code-signed.
+appears because the .exe is signed by "E" with a self-signed certificate, which Windows
+doesn't trust yet (see [packaging/README.md](packaging/README.md#digital-signature)).
 
 ### From the source code (Windows, macOS, Linux)
 

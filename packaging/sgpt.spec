@@ -34,6 +34,7 @@ exe = EXE(
     a.datas,
     name="SGPT",
     icon=os.path.join(SPECPATH, "sgpt.ico"),
+    version=os.path.join(SPECPATH, "version_info.txt"),  # publisher "E" etc.
     console=True,
     upx=False,
 )

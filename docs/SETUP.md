@@ -105,5 +105,5 @@ to get the most faithful Word → PDF layout, install the free
 | Port already in use | `python -m sgpt.app --port 8800` |
 | "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
 | "The system cannot find the path specified" from `start-sgpt.bat` | Extract the ZIP first (right-click → Extract All) and run the launcher from the extracted folder. If it still happens, delete the `.venv` folder and run it again, or use SGPT.exe. |
-| "Windows protected your PC" for SGPT.exe | Click **More info → Run anyway**. The .exe is not code-signed. |
+| "Windows protected your PC" for SGPT.exe | Click **More info → Run anyway**. The .exe is signed by "E" with a self-signed certificate, which Windows doesn't trust yet. |
 | Internet search is blocked | SGPT carries on with the AI's own knowledge and shows a warning. Add your own sources for better results. |

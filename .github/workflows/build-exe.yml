@@ -36,6 +36,33 @@ jobs:
         run: pip install -r requirements.txt pyinstaller
       - name: Build
         run: pyinstaller packaging/sgpt.spec --noconfirm
+      - name: Sign SGPT.exe (publisher "E")
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.SGPT_SIGN_PFX }}
+          SIGN_PASSWORD: ${{ secrets.SGPT_SIGN_PASSWORD }}
+        run: |
+          # Uses your certificate from the repository secrets if you added one
+          # (see packaging/README.md); otherwise a self-signed "CN=E" certificate.
+          if ($env:SIGN_PFX) {
+            [IO.File]::WriteAllBytes("sign.pfx", [Convert]::FromBase64String($env:SIGN_PFX))
+            $pw = $env:SIGN_PASSWORD
+          } else {
+            $pw = [guid]::NewGuid().ToString()
+            $cert = New-SelfSignedCertificate -Subject "CN=E" -Type CodeSigningCert `
+              -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)
+            Export-PfxCertificate -Cert $cert -FilePath sign.pfx `
+              -Password (ConvertTo-SecureString $pw -AsPlainText -Force) | Out-Null
+          }
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f sign.pfx /p $pw /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 `
+            /d "SGPT (Study General Purpose Tool)" dist\SGPT.exe
+          $code = $LASTEXITCODE
+          Remove-Item sign.pfx
+          if ($code -ne 0) { throw "Signing failed" }
+          (Get-AuthenticodeSignature dist\SGPT.exe).SignerCertificate | Format-List Subject, NotAfter
       - name: Check that SGPT.exe starts
         shell: pwsh
         run: |
