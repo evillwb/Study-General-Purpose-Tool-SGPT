@@ -1,0 +1,7 @@
+* text=auto
+# Stored with Windows (CRLF) line endings as-is, so every download works in cmd.exe.
+*.bat -text
+*.cmd -text
+*.command text eol=lf
+*.sh text eol=lf
+*.ico binary

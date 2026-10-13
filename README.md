@@ -22,6 +22,22 @@ OpenAI-compatible server. Exams and notes can be in **English, Chinese (中文) 
 
 ## Quick start
 
+### Windows: SGPT.exe (no Python needed)
+
+1. Install [Ollama](https://ollama.com/download) and run `ollama pull qwen3:4b`
+   (or skip this and use a cloud AI with an API key).
+2. Download **SGPT.exe** from the
+   [Releases page](https://github.com/evillwb/Study-General-Purpose-Tool-SGPT/releases)
+   ("SGPT for Windows (latest)") and double-click it.
+
+The app opens in your browser. Keep the black window open while you use it; close it to
+quit. Your files are kept in `Documents\SGPT`. The first start takes a few seconds.
+
+If Windows shows "Windows protected your PC", click **More info → Run anyway**. This
+appears because the .exe is not code-signed.
+
+### From the source code (Windows, macOS, Linux)
+
 1. Install [Python 3.10+](https://www.python.org/downloads/) and
    [Ollama](https://ollama.com/download), then get the model:
    ```bash

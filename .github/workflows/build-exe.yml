@@ -1,0 +1,68 @@
+# Builds SGPT.exe on Windows. Every push makes a downloadable "SGPT-windows" artifact
+# (Actions tab -> the run -> Artifacts). Pushes to main also update the
+# "SGPT for Windows (latest)" release, which has a direct download link.
+name: Build SGPT.exe
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  windows-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: pyinstaller packaging/sgpt.spec --noconfirm
+      - name: Check that SGPT.exe starts
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\SGPT.exe -ArgumentList "--no-browser" -PassThru
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/meta
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch {}
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "SGPT.exe did not start" }
+          Write-Host "SGPT.exe started and answered."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SGPT-windows
+          path: dist/SGPT.exe
+      - name: Publish the latest release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete sgpt-windows-latest --yes --cleanup-tag || true
+          gh release create sgpt-windows-latest dist/SGPT.exe \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "SGPT for Windows (latest)" \
+            --notes "Download SGPT.exe and double-click it. No Python needed. Built from ${GITHUB_SHA::7}."
