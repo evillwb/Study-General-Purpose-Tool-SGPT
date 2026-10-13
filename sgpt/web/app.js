@@ -823,7 +823,10 @@ const STYLE_HINTS = {
 function initStudy() {
   const m = state.meta.study;
   $("#st-style").replaceChildren(...Object.entries(m.note_styles).map(([id, label]) => el("option", { value: id }, label)));
-  $("#st-test").replaceChildren(...Object.entries(m.grammar_tests).map(([id, label]) => el("option", { value: id }, label)));
+  const groups = { en: "English", zh: "中文 (Chinese)", ms: "Bahasa Melayu" };
+  $("#st-test").replaceChildren(...Object.entries(groups).map(([code, name]) => el("optgroup", { label: name },
+    ...Object.entries(m.grammar_tests).filter(([id]) => id.startsWith(code + "_"))
+      .map(([id, label]) => el("option", { value: id }, label.split(" · ")[1] || label)))));
   $("#st-language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
   $("#st-translate").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
   const saved = store.get("study", {});

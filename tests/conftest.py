@@ -66,6 +66,18 @@ def fake_reply(system: str, prompt: str) -> str:
             {"n": it["n"], "ok": it["n"] != 2,
              "answer": (1 if isinstance(it.get("answer"), int) else "fixed") if it["n"] == 1 else it.get("answer")}
             for it in items]})
+    if "grammar test items" in system:
+        n = int(re.search(r"Write (\d+)", prompt).group(1))
+        if '"segments"' in prompt:
+            return json.dumps({"items": [{"segments": ["Para pelajar", "sedang", "pelajaran-pelajaran", "itu."],
+                                          "error_index": 2, "correction": "pelajaran", "explanation": "jamak"}
+                                         for _ in range(n)]})
+        if '"options"' in prompt:
+            return json.dumps({"items": [{"question": f"这是一_____书 {i}。", "options": ["本", "张", "条", "只"],
+                                          "answer": 0, "explanation": "books take 本"} for i in range(n)]},
+                              ensure_ascii=False)
+        return json.dumps({"items": [{"sentence": f"She _____ (go) home {i}.", "base": "go",
+                                      "answer": "went", "explanation": "past"} for i in range(n)]})
     if "expert teacher" in system or "exam study guides" in system:
         n = int((re.search(r"(?:Make|Write) (\d+)", prompt) or re.search(r"Tulis (\d+)", prompt) or [0, 3])[1])
         if "flashcards" in prompt:
@@ -73,13 +85,6 @@ def fake_reply(system: str, prompt: str) -> str:
         if "multiple-choice" in prompt:
             return json.dumps({"questions": [{"question": f"Q{i}?", "options": ["a", "b", "c", "d"],
                                               "answer": 2, "explanation": "because"} for i in range(n)]})
-        if "TENSES" in prompt or "WORD FORM" in prompt:
-            return json.dumps({"items": [{"sentence": f"She _____ (go) home {i}.", "base": "go",
-                                          "answer": "went", "explanation": "past"} for i in range(n)]})
-        if "KENAL PASTI" in prompt:
-            return json.dumps({"items": [{"segments": ["Para pelajar", "sedang", "pelajaran-pelajaran", "itu."],
-                                          "error_index": 2, "correction": "pelajaran", "explanation": "jamak"}
-                                         for _ in range(n)]})
         if prompt.startswith("Explain"):
             words = re.search(r"these words: (.*?)\. Level", prompt)
             names = words.group(1).split(", ") if words else ["photosynthesis", "chlorophyll"]
