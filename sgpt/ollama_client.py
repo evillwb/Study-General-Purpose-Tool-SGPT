@@ -1,4 +1,4 @@
-"""Minimal client for the local Ollama HTTP API (standard library only)."""
+"""Minimal client for the local Ollama HTTP API (standard library only), plus shared helpers."""
 
 from __future__ import annotations
 
@@ -7,12 +7,20 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from typing import Callable
 
 _THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
-class OllamaError(RuntimeError):
-    pass
+class LLMError(RuntimeError):
+    """A problem talking to the AI provider, with a message fit to show the user."""
+
+
+OllamaError = LLMError
+
+
+class Cancelled(Exception):
+    """Raised when the user stops a generation part-way through."""
 
 
 def strip_thinking(text: str) -> str:
@@ -61,9 +69,12 @@ class OllamaClient:
                 "Is it running? Start it with `ollama serve` or open the Ollama app."
             ) from exc
 
-    def check_model(self) -> None:
+    def list_models(self) -> list[str]:
         with self._request("/api/tags") as resp:
-            names = {m.get("name") for m in json.load(resp).get("models", [])}
+            return sorted(m.get("name") for m in json.load(resp).get("models", []))
+
+    def check_model(self) -> None:
+        names = set(self.list_models())
         wanted = self.model if ":" in self.model else self.model + ":latest"
         if wanted not in names:
             raise OllamaError(
@@ -71,9 +82,10 @@ class OllamaClient:
             )
 
     def chat(self, system: str, prompt: str, json_mode: bool = False,
-             max_tokens: int = 4096, label: str = "") -> str:
+             max_tokens: int = 4096, label: str = "",
+             should_stop: Callable[[], bool] | None = None, think: bool = False) -> str:
         options = {"temperature": self.temperature, "num_ctx": self.num_ctx,
-                   "num_predict": max_tokens}
+                   "num_predict": max_tokens * 3 if think else max_tokens}
         if self.seed is not None:
             options["seed"] = self.seed
         payload = {
@@ -81,7 +93,8 @@ class OllamaClient:
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}],
             "stream": True,
-            "think": False,  # qwen3: skip the hidden reasoning phase for faster output
+            # qwen3: skip the hidden reasoning phase for speed, except when checking answers
+            "think": think,
             "options": options,
         }
         if json_mode:
@@ -100,6 +113,8 @@ class OllamaClient:
                 chunks.append(event.get("message", {}).get("content", ""))
                 if self.verbose and label and len(chunks) % 40 == 0:
                     print(".", end="", flush=True)
+                if should_stop and should_stop():
+                    raise Cancelled()
                 if event.get("done"):
                     break
         if self.verbose and label:

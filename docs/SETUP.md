@@ -2,74 +2,101 @@
 
 ## Requirements
 
-| | Minimum |
+| | |
 | --- | --- |
 | Python | 3.10 or newer |
-| Ollama | 0.9 or newer (older versions work but may print qwen3's `<think>` reasoning slowly) |
-| RAM | 8 GB (`qwen3:4b` uses about 3–4 GB) |
-| Disk | about 3 GB for the model |
+| For local AI | [Ollama](https://ollama.com/download) and about 8 GB of RAM for `qwen3:4b` |
+| For cloud AI | An API key from the provider instead (no Ollama needed) |
+| Disk | About 1 GB for the app's Python packages, plus about 3 GB for the Ollama model |
 
-A GPU makes generation much faster but is not required. On a CPU a full paper can take
-5–20 minutes.
+## 1. Install
 
-## 1. Install Ollama and the model
+### The easy way
+Double-click **`start-sgpt.bat`** (Windows) or **`start-sgpt.command`**
+(macOS/Linux). The first run creates a `.venv` folder and installs everything listed in
+`requirements.txt`, then opens the app.
 
-1. Download and install Ollama from <https://ollama.com/download>.
-2. Open a terminal and run:
-   ```bash
-   ollama pull qwen3:4b
-   ollama run qwen3:4b "Say hello"     # quick test, then press Ctrl+D to exit
-   ```
-3. Ollama runs in the background (the menu-bar or tray app, or `ollama serve`). The program
-   connects to it at `http://localhost:11434`.
+On macOS, if it says the file can't be opened, right-click it, choose **Open**, then **Open**
+again. You only have to do this once.
 
-## 2. Get the code
-
+### By hand
 ```bash
-git clone https://github.com/evillwb/Easy-Note-AI---Project.git
-cd Easy-Note-AI---Project
-```
-
-## 3. Install the Python dependency
-
-**Windows (PowerShell)**
-```powershell
 python -m venv .venv
-.venv\Scripts\Activate.ps1
+# Windows:      .venv\Scripts\activate
+# macOS/Linux:  source .venv/bin/activate
 pip install -r requirements.txt
-```
-If PowerShell blocks the activate script, run
-`Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` once.
-
-**macOS / Linux**
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+python -m sgpt.app          # the app
+python -m sgpt --help       # the command line
 ```
 
-## 4. Add past papers and run
+App options: `--port 8765`, `--library library` (where uploaded files are kept),
+`--output output` (where exams are saved), `--host http://localhost:11434` (Ollama URL),
+`--no-browser`.
 
-1. Copy your past-paper PDFs into the `past_papers/` folder. Papers from the same subject
-   and level give the best results.
-2. Run:
-   ```bash
-   python -m exam_gen
-   ```
-3. Open the new file in `output/`. Any Markdown viewer works, including VS Code
-   (`Ctrl+Shift+V` for preview), Obsidian or Typora.
+## 2. Choose your AI
 
-To turn it into a PDF or Word document you can use [Pandoc](https://pandoc.org):
-`pandoc output/practice_exam_....md -o exam.docx`
+Open the app and click the status pill at the top right (or the ⚙ button).
+
+| Provider | What you need | Default model |
+| --- | --- | --- |
+| Ollama (local, private) | `ollama pull qwen3:4b` and the Ollama app running | `qwen3:4b` |
+| OpenAI | API key from platform.openai.com | `gpt-5-mini` |
+| Anthropic Claude | API key from platform.claude.com | `claude-opus-5-5` |
+| Google Gemini | API key from aistudio.google.com | `gemini-2.5-flash` |
+| Groq | API key from console.groq.com | `llama-3.3-70b-versatile` |
+| OpenRouter | API key from openrouter.ai | `openai/gpt-5-mini` |
+| DeepSeek | API key from platform.deepseek.com | `deepseek-chat` |
+| Custom | Any OpenAI-compatible server: LM Studio, vLLM, Mistral, Together… | your choice |
+
+You can type any model name the provider offers; the model box suggests the ones your key
+can use. Keys are saved only on your computer in `~/.sgpt/config.json`. You can also
+use environment variables (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`,
+`GROQ_API_KEY`, `OPENROUTER_API_KEY`, `DEEPSEEK_API_KEY`), which is what the command line
+uses with `-p openai` and similar.
+
+With Claude, SGPT uses the official `anthropic` SDK. Requests use the "high" effort
+setting and Anthropic's automatic fallback to another model if a request is declined.
+
+## 3. Sources, OCR and internet search
+
+- **Files:** drop PDFs, `.txt`, `.md` or photos (`.png`, `.jpg`) into the app. A PDF with 3
+  or more numbered questions is marked as a *past paper*; anything else is *notes*. You can
+  change this, or switch a file off, in the file list.
+- **Scanned PDFs and photos** are read with OCR. It is built in (RapidOCR, installed by
+  `requirements.txt`), works offline, and reads English, Malay and Chinese. The first scan
+  takes a few seconds per page; the result is cached in a hidden `.sgpt-cache` folder
+  next to the file. If you prefer Tesseract, uninstall `rapidocr` and install Tesseract,
+  and it is used instead.
+- **Internet search** runs when you have no other sources, or always/never if you choose so
+  on the **Web** tab. The free default uses DuckDuckGo plus Wikipedia, in your exam's
+  language. For more reliable results add a Brave Search or Tavily API key in the settings.
+
+## 4. Languages
+
+Choose the **exam language** (English, 中文, Bahasa Melayu) and the language your
+**sources** are in. Sources in one language can produce an exam in another. Question
+numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is recognised in
+past papers.
+
+## 5. Converting files (optional: LibreOffice)
+
+PDF, Word (`.docx`), images, Markdown, text and HTML convert with nothing extra
+installed. To convert old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint and Excel, and
+to get the most faithful Word → PDF layout, install the free
+[LibreOffice](https://www.libreoffice.org/download/). SGPT finds it automatically.
 
 ## Troubleshooting
 
-| Message | Fix |
+| Problem | Fix |
 | --- | --- |
-| `Cannot reach Ollama at http://localhost:11434` | Start the Ollama app, or run `ollama serve` in another terminal. |
-| `Model 'qwen3:4b' is not installed` | `ollama pull qwen3:4b` |
-| `little or no text found (scanned image PDF?)` | The PDF is a scan. OCR it first: `ocrmypdf in.pdf out.pdf` |
-| `0 questions detected` | The numbering style was not recognised. Generation still works, but run with `--dump-extracted` to see the text, then adjust the patterns in `exam_gen/pdf_extract.py`. |
-| Out of memory / very slow | Lower `--num-ctx 8192` and `--max-chars 8000`. |
-| Questions are repetitive or off-topic | Add `--subject`, `--level` and `--instructions "..."`, or try a lower `--temperature`. |
-| Ollama on another machine | `--host http://192.168.1.20:11434`, or set the `OLLAMA_HOST` environment variable. |
+| "Ollama is not running" | Open the Ollama app, or run `ollama serve`. |
+| "… is not installed. Run: ollama pull …" | Run that command, or choose another model. |
+| "rejected the API key" | Paste the key again in the settings, and check you have credit with that provider. |
+| "rate limit or quota reached" | Wait a minute, or check your plan with the provider. |
+| A scanned PDF says "Install OCR" | `pip install rapidocr onnxruntime` (inside `.venv`). |
+| Web search finds nothing | Your network may block DuckDuckGo: add a Brave or Tavily key, or add your own sources. |
+| Questions are wrong or repetitive | Use a bigger model, add better sources, lower *Creativity*, or add instructions under *More options*. |
+| Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
+| Port already in use | `python -m sgpt.app --port 8800` |
+| "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
+| Internet search is blocked | SGPT carries on with the AI's own knowledge and shows a warning. Add your own sources for better results. |

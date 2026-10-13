@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SGPT · Study General Purpose Tool</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%234f46e5'/><path d='M10 16.5l4 4 8-9' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M10 16.5l4 4 8-9"/></svg>
+      </span>
+      <span class="brand-text"><strong>SGPT</strong><small>Study General Purpose Tool</small></span>
+    </div>
+    <nav class="nav" aria-label="Main">
+      <button class="nav-link active" data-view="create" type="button">Exam</button>
+      <button class="nav-link" data-view="study" type="button">Study</button>
+      <button class="nav-link" data-view="library" type="button">My exams <span id="exam-count" class="count"></span></button>
+      <button class="nav-link" data-view="bank" type="button">Question bank</button>
+      <button class="nav-link" data-view="ocr" type="button">OCR</button>
+      <button class="nav-link" data-view="convert" type="button">Convert</button>
+    </nav>
+    <div class="top-actions">
+      <button id="status" class="status" type="button" title="AI settings">
+        <span class="dot"></span><span id="status-text">Checking…</span>
+      </button>
+      <button id="open-settings" class="icon-btn" type="button" aria-label="AI settings" title="AI settings">
+        <svg viewBox="0 0 24 24"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============ CREATE ============ -->
+  <main id="view-create" class="create">
+    <aside class="builder" aria-label="Exam builder">
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">1</span>What is the exam about?</h2>
+        <input id="topic" class="big-input" placeholder="e.g. Photosynthesis, Quadratic equations, World War I" autocomplete="off">
+        <div class="row">
+          <label class="field">Subject <input id="subject" placeholder="e.g. Biology"></label>
+          <label class="field">Level <input id="level" placeholder="e.g. GCSE, Year 9"></label>
+        </div>
+        <div class="row">
+          <label class="field">Exam language <select id="language"></select></label>
+          <label class="field">Sources are in <select id="source_language"><option value="auto">Any language (auto)</option></select></label>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">2</span>Sources</h2>
+        <div class="tabs small" role="tablist">
+          <button class="tab active" data-src="files" role="tab" type="button">Files <span id="src-files-n" class="count"></span></button>
+          <button class="tab" data-src="text" role="tab" type="button">Text <span id="src-text-n" class="count"></span></button>
+          <button class="tab" data-src="links" role="tab" type="button">Links <span id="src-links-n" class="count"></span></button>
+          <button class="tab" data-src="web" role="tab" type="button">Web</button>
+        </div>
+
+        <div class="src-pane" data-src="files">
+          <label id="dropzone" class="dropzone">
+            <input id="file-input" type="file" accept=".pdf,.txt,.md,.png,.jpg,.jpeg,.webp" multiple hidden>
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            <strong>Drop past papers or notes</strong>
+            <span>PDF, TXT, Markdown or photos · scans are read with OCR</span>
+          </label>
+          <ul id="file-list" class="file-list"></ul>
+          <div id="analysis-bar" class="analysis-bar" hidden></div>
+        </div>
+        <div class="src-pane" data-src="text" hidden>
+          <textarea id="src-text" rows="7" placeholder="Paste notes, a textbook extract or a syllabus here…"></textarea>
+        </div>
+        <div class="src-pane" data-src="links" hidden>
+          <textarea id="src-links" rows="5" placeholder="One web page or PDF link per line&#10;https://…"></textarea>
+        </div>
+        <div class="src-pane" data-src="web" hidden>
+          <div class="radio-list" role="radiogroup" aria-label="Internet search">
+            <label><input type="radio" name="web" value="auto" checked> <span><b>Automatic</b><small>Search the internet only when you add no other sources</small></span></label>
+            <label><input type="radio" name="web" value="on"> <span><b>Always</b><small>Add internet results to your own sources</small></span></label>
+            <label><input type="radio" name="web" value="off"> <span><b>Never</b><small>Use only your own sources and the AI's knowledge</small></span></label>
+          </div>
+          <p class="hint">Searches for the topic above using <span id="engine-name">DuckDuckGo + Wikipedia</span>. <button class="linkish" type="button" data-open-settings>Change</button></p>
+        </div>
+        <p id="source-summary" class="source-summary"></p>
+      </section>
+
+      <section class="panel">
+        <h2 class="panel-title"><span class="step">3</span>Questions</h2>
+        <div class="segmented" role="radiogroup" aria-label="Paper structure">
+          <label><input type="radio" name="structure" value="custom" checked><span>Choose question types</span></label>
+          <label id="match-option"><input type="radio" name="structure" value="match"><span>Match my past papers</span></label>
+        </div>
+        <div id="plan" class="plan"></div>
+        <p id="match-note" class="hint" hidden>The new paper copies the sections, question styles and marks of the past papers you added.</p>
+        <div class="field-label">Difficulty</div>
+        <div class="segmented wrap3" role="radiogroup" aria-label="Difficulty">
+          <label><input type="radio" name="difficulty" value="easy"><span>Easy</span></label>
+          <label><input type="radio" name="difficulty" value="medium"><span>Medium</span></label>
+          <label><input type="radio" name="difficulty" value="hard"><span>Hard</span></label>
+          <label><input type="radio" name="difficulty" value="mixed" checked><span>Mixed</span></label>
+          <label id="past-option" title="Analyse your past papers to use this"><input type="radio" name="difficulty" value="past"><span>Like past papers</span></label>
+          <label><input type="radio" name="difficulty" value="custom"><span>Custom</span></label>
+        </div>
+        <div id="mix-custom" class="mix-custom" hidden>
+          <label>Easy <input type="range" min="0" max="100" step="5" data-level="easy"><output></output></label>
+          <label>Medium <input type="range" min="0" max="100" step="5" data-level="medium"><output></output></label>
+          <label>Hard <input type="range" min="0" max="100" step="5" data-level="hard"><output></output></label>
+        </div>
+        <div id="mix-bar" class="mix-bar" aria-label="Difficulty mix"></div>
+        <label class="field challenge">Fine-tune <output id="challenge-out">Normal</output>
+          <input id="challenge" type="range" min="-2" max="2" step="1" value="0" list="challenge-ticks">
+          <span class="ticks"><span>Much easier</span><span>Normal</span><span>Much harder</span></span>
+        </label>
+        <label class="check strong"><input id="verify" type="checkbox" checked>
+          <span><b>Double-check every answer</b><small>The AI re-solves each question to catch mistakes. Slower, more accurate.</small></span></label>
+        <details class="more">
+          <summary>More options</summary>
+          <label class="field">Instructions for the AI
+            <textarea id="instructions" rows="3" placeholder="e.g. Use real-life contexts. Make the last question a challenge."></textarea>
+          </label>
+          <label class="field narrow">Time allowed (minutes)
+            <input id="minutes" type="number" min="5" step="5" placeholder="Auto">
+          </label>
+        </details>
+      </section>
+
+      <div class="generate-bar">
+        <div id="plan-summary" class="plan-summary"></div>
+        <button id="generate" class="btn primary big" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>
+          Generate exam
+        </button>
+        <p id="generate-hint" class="hint center"></p>
+      </div>
+    </aside>
+
+    <section class="stage" aria-live="polite">
+      <div id="empty" class="empty">
+        <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h1>Make a practice exam in minutes</h1>
+        <p class="lead">Add your past papers or notes, paste a link, or just type a topic and let SGPT search the internet.</p>
+        <div class="how">
+          <div><b>1</b><span>Choose a topic and sources</span></div>
+          <div><b>2</b><span>Pick question types and difficulty</span></div>
+          <div><b>3</b><span>Get the paper, model answers and a marking scheme</span></div>
+        </div>
+      </div>
+
+      <div id="progress" class="progress-card" hidden>
+        <div class="progress-top">
+          <div>
+            <h2 id="progress-title">Generating…</h2>
+            <p id="progress-msg" class="muted"></p>
+          </div>
+          <button id="cancel" class="btn" type="button">Stop</button>
+        </div>
+        <div class="bar"><div id="bar-fill"></div></div>
+        <div class="progress-meta"><span id="progress-steps"></span><span id="elapsed"></span></div>
+        <ul id="progress-log" class="log"></ul>
+        <p class="hint">A small local model can take 10–30 minutes; cloud AI is usually much faster. You can leave this page and come back.</p>
+      </div>
+
+      <div id="analysis" class="analysis-card" hidden></div>
+
+      <div id="result" class="result" hidden>
+        <div class="result-head">
+          <div class="title-wrap">
+            <h1 id="exam-title" class="exam-title" contenteditable="true" spellcheck="false" title="Click to rename"></h1>
+            <div id="exam-chips" class="chips"></div>
+          </div>
+          <div class="actions">
+            <div class="menu">
+              <button id="export-btn" class="btn" type="button" aria-haspopup="true">Export ▾</button>
+              <div id="export-menu" class="menu-list export-grid" hidden>
+                <span></span><b>Word</b><b>PDF</b><b>MD</b>
+                <span>Exam paper</span><a data-part="paper" data-format="docx">.docx</a><a data-part="paper" data-format="pdf">.pdf</a><a data-part="paper" data-format="md">.md</a>
+                <span>Model answers</span><a data-part="answers" data-format="docx">.docx</a><a data-part="answers" data-format="pdf">.pdf</a><a data-part="answers" data-format="md">.md</a>
+                <span>Marking scheme</span><a data-part="scheme" data-format="docx">.docx</a><a data-part="scheme" data-format="pdf">.pdf</a><a data-part="scheme" data-format="md">.md</a>
+                <span>Everything</span><a data-part="all" data-format="docx">.docx</a><a data-part="all" data-format="pdf">.pdf</a><a data-part="all" data-format="md">.md</a>
+                <button id="copy" type="button">Copy everything as Markdown</button>
+              </div>
+            </div>
+            <button id="print" class="btn primary" type="button">Print / PDF</button>
+          </div>
+        </div>
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="questions" role="tab" type="button">Questions</button>
+          <button class="tab" data-tab="paper" role="tab" type="button">Exam paper</button>
+          <button class="tab" data-tab="answers" role="tab" type="button">Model answers</button>
+          <button class="tab" data-tab="scheme" role="tab" type="button">Marking scheme</button>
+        </div>
+        <div id="questions" class="questions"></div>
+        <article id="sheet" class="sheet" hidden></article>
+        <div id="sources-used" class="sources-used"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ MY EXAMS ============ -->
+  <main id="view-library" class="exams-view" hidden>
+    <div class="exams-head">
+      <h1>My exams</h1>
+      <button class="btn primary" type="button" data-view-link="create">+ New exam</button>
+    </div>
+    <div id="exam-grid" class="exam-grid"></div>
+  </main>
+
+  <!-- ============ OCR ONLY ============ -->
+  <main id="view-ocr" class="ocr-view" hidden>
+    <div class="exams-head">
+      <div>
+        <h1>OCR</h1>
+        <p class="muted">Turn scanned PDFs and photos into text. Runs offline on this computer and reads English, Malay and Chinese.</p>
+      </div>
+    </div>
+    <section class="panel ocr-input">
+      <label id="ocr-drop" class="dropzone">
+        <input id="ocr-input" type="file" accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff" multiple hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7V5a1 1 0 0 1 1-1h2M17 4h2a1 1 0 0 1 1 1v2M20 17v2a1 1 0 0 1-1 1h-2M7 20H5a1 1 0 0 1-1-1v-2M8 9h8M8 12h8M8 15h5"/></svg>
+        <strong>Drop scanned PDFs or photos</strong>
+        <span>PDF, PNG, JPG… · click to browse</span>
+      </label>
+      <label class="check"><input id="ocr-force" type="checkbox"> OCR every page, even pages that already contain selectable text</label>
+      <p id="ocr-missing" class="note warn" hidden>OCR is not installed. In a terminal, run <code>pip install rapidocr onnxruntime</code> inside the app's <code>.venv</code>, then restart.</p>
+      <div id="ocr-progress" class="ocr-progress" hidden>
+        <div class="progress-meta"><span id="ocr-msg"></span><button id="ocr-cancel" class="btn small" type="button">Stop</button></div>
+        <div class="bar"><div id="ocr-fill"></div></div>
+      </div>
+    </section>
+    <div id="ocr-results" class="ocr-results"></div>
+  </main>
+
+  <!-- ============ STUDY TOOLS ============ -->
+  <main id="view-study" class="create" hidden>
+    <aside class="builder" aria-label="Study tools">
+      <section class="panel">
+        <div class="tool-grid" role="tablist" aria-label="Study tool">
+          <button class="tool active" data-tool="notes" type="button"><span>📝</span><b>Notes</b><small>Study notes &amp; guides</small></button>
+          <button class="tool" data-tool="flashcards" type="button"><span>🃏</span><b>Flashcards</b><small>Flip &amp; memorise</small></button>
+          <button class="tool" data-tool="vocab" type="button"><span>🔤</span><b>Vocabulary</b><small>Meanings &amp; examples</small></button>
+          <button class="tool" data-tool="quiz" type="button"><span>⏱️</span><b>MCQ quiz</b><small>Timed or untimed</small></button>
+          <button class="tool" data-tool="grammar" type="button"><span>✍️</span><b>Grammar</b><small>Tenses, word form, Malay</small></button>
+        </div>
+      </section>
+      <section class="panel" id="study-form">
+        <h2 class="panel-title" id="study-form-title">Notes</h2>
+        <input id="st-topic" class="big-input" placeholder="Topic, e.g. Cell division" autocomplete="off">
+        <div class="row">
+          <label class="field">Level <input id="st-level" placeholder="e.g. Form 4, GCSE"></label>
+          <label class="field" data-for="notes flashcards vocab quiz">Language <select id="st-language"></select></label>
+          <label class="field" data-for="grammar">Test
+            <select id="st-test"></select>
+          </label>
+        </div>
+        <label class="field" data-for="notes">Style <select id="st-style"></select></label>
+        <p class="hint" data-for="notes" id="st-style-hint"></p>
+        <div data-for="notes">
+          <div class="field-label">Length</div>
+          <div class="segmented" role="radiogroup" aria-label="Length">
+            <label><input type="radio" name="st-length" value="short"><span>Short</span></label>
+            <label><input type="radio" name="st-length" value="medium" checked><span>Medium</span></label>
+            <label><input type="radio" name="st-length" value="long"><span>Long</span></label>
+          </div>
+        </div>
+        <label class="field" data-for="vocab">Words (optional, one per line or comma-separated)
+          <textarea id="st-words" rows="4" placeholder="Leave empty to pick the key words from your topic and sources"></textarea>
+        </label>
+        <div class="row">
+          <label class="field" data-for="flashcards vocab quiz grammar">How many <input id="st-count" type="number" min="1" max="100" value="20"></label>
+          <label class="field" data-for="vocab">Translate to <select id="st-translate"><option value="">No translation</option></select></label>
+          <label class="field" data-for="quiz">Difficulty
+            <select id="st-difficulty"><option value="mixed">Mixed</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select>
+          </label>
+        </div>
+        <div data-for="notes flashcards vocab quiz" class="study-sources">
+          <div class="field-label">Sources</div>
+          <label class="check"><input id="st-files" type="checkbox"> Use the files on the Exam page (<span id="st-files-n">0</span>)</label>
+          <details class="more">
+            <summary>Paste text or links</summary>
+            <textarea id="st-text" rows="5" placeholder="Paste notes, a textbook extract…"></textarea>
+            <textarea id="st-urls" rows="2" placeholder="Links, one per line"></textarea>
+          </details>
+          <label class="field">Internet search
+            <select id="st-web">
+              <option value="auto">Only if I give no sources</option>
+              <option value="on">Always add web results</option>
+              <option value="off">Never</option>
+            </select>
+          </label>
+        </div>
+        <details class="more">
+          <summary>Instructions for the AI</summary>
+          <textarea id="st-instructions" rows="3" placeholder="e.g. Focus on chapter 3. Use simple English."></textarea>
+        </details>
+        <button id="st-generate" class="btn primary big" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>
+          <span id="st-generate-label">Make notes</span>
+        </button>
+        <p id="st-hint" class="hint center"></p>
+      </section>
+      <section class="panel">
+        <h2 class="panel-title">Recent</h2>
+        <ul id="study-recent" class="file-list"></ul>
+      </section>
+    </aside>
+    <section class="stage" aria-live="polite">
+      <div id="study-empty" class="empty">
+        <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h1>Study smarter</h1>
+        <p class="lead">Turn a topic, your notes, PDFs or links into study notes, flashcards, vocabulary lists, timed quizzes and grammar practice.</p>
+      </div>
+      <div id="study-progress" class="progress-card" hidden>
+        <div class="progress-top">
+          <div><h2 id="sp-title">Working…</h2><p id="sp-msg" class="muted"></p></div>
+          <button id="sp-cancel" class="btn" type="button">Stop</button>
+        </div>
+        <div class="bar"><div id="sp-fill"></div></div>
+        <div class="progress-meta"><span id="sp-steps"></span><span id="sp-elapsed"></span></div>
+      </div>
+      <div id="study-view" class="study-view" hidden></div>
+    </section>
+  </main>
+
+  <!-- ============ QUESTION BANK ============ -->
+  <main id="view-bank" class="bank-view" hidden>
+    <div class="exams-head">
+      <div>
+        <h1>Question bank</h1>
+        <p class="muted">Every question from your past-year papers, sorted by chapter, with the hardest ones picked out.</p>
+      </div>
+      <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+    </div>
+    <p id="bank-note" class="note" hidden></p>
+    <div id="bank-progress" class="panel ocr-progress" hidden>
+      <div class="progress-meta"><span id="bank-msg"></span><span id="bank-steps"></span></div>
+      <div class="bar"><div id="bank-fill"></div></div>
+    </div>
+    <div id="bank-body" hidden>
+      <div class="bank-toolbar">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-bank-tab="chapters" role="tab" type="button">By chapter</button>
+          <button class="tab" data-bank-tab="hardest" role="tab" type="button">Hardest per chapter</button>
+        </div>
+        <input id="bank-search" type="search" placeholder="Search questions…">
+        <select id="bank-chapter" aria-label="Chapter"></select>
+        <select id="bank-sort" aria-label="Sort">
+          <option value="paper">Paper order</option>
+          <option value="hard">Hardest first</option>
+          <option value="marks">Most marks first</option>
+        </select>
+        <select id="bank-n" aria-label="How many per chapter" hidden>
+          <option value="5">Top 5</option><option value="10" selected>Top 10</option><option value="20">Top 20</option>
+        </select>
+        <div class="menu">
+          <button id="bank-export-btn" class="btn" type="button">Export ▾</button>
+          <div id="bank-export" class="menu-list" hidden>
+            <a data-format="docx">Word (.docx)</a><a data-format="pdf">PDF</a><a data-format="md">Markdown</a>
+          </div>
+        </div>
+        <button id="bank-answers" class="btn" type="button">Get answers for these</button>
+      </div>
+      <div id="bank-chips" class="bank-chips"></div>
+      <div id="bank-list" class="questions"></div>
+    </div>
+  </main>
+
+  <!-- ============ CONVERT ============ -->
+  <main id="view-convert" class="ocr-view" hidden>
+    <div class="exams-head">
+      <div>
+        <h1>Convert files</h1>
+        <p class="muted">Word ↔ PDF, images ↔ PDF, Markdown, text and web pages, merge PDFs, or make a scan searchable. Runs on this computer.</p>
+      </div>
+    </div>
+    <section class="panel">
+      <label id="conv-drop" class="dropzone">
+        <input id="conv-input" type="file" multiple hidden>
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h7l5 5v11a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"/><path d="M9 14h6m-2-2 2 2-2 2"/></svg>
+        <strong>Drop files to convert</strong>
+        <span>PDF, Word, images, Markdown, text, HTML<span id="lo-note"></span></span>
+      </label>
+      <ul id="conv-files" class="file-list"></ul>
+      <div class="field-label">Convert to</div>
+      <div id="conv-targets" class="segmented wrap3" role="radiogroup" aria-label="Convert to"></div>
+      <p id="conv-hint" class="hint"></p>
+      <button id="conv-go" class="btn primary big" type="button" disabled>Convert</button>
+      <div id="conv-progress" class="ocr-progress" hidden>
+        <div class="progress-meta"><span id="conv-msg"></span></div>
+        <div class="bar"><div id="conv-fill"></div></div>
+      </div>
+    </section>
+    <section id="conv-results" class="panel" hidden>
+      <h2 class="panel-title">Ready to download</h2>
+      <ul id="conv-list" class="file-list"></ul>
+    </section>
+  </main>
+
+  <!-- ============ SETTINGS ============ -->
+  <dialog id="settings" class="settings">
+    <form method="dialog" class="settings-inner">
+      <div class="settings-head">
+        <h2>AI settings</h2>
+        <button class="icon-btn" value="close" aria-label="Close">✕</button>
+      </div>
+
+      <label class="field">AI provider
+        <select id="provider"></select>
+      </label>
+      <p id="privacy" class="note"></p>
+      <div id="key-row">
+        <label class="field">API key
+          <span class="inline">
+            <input id="api-key" type="password" autocomplete="off" spellcheck="false">
+            <button id="save-key" class="btn" type="button">Save</button>
+          </span>
+        </label>
+        <p id="key-hint" class="hint"></p>
+      </div>
+      <label id="url-row" class="field">Server URL
+        <span class="inline">
+          <input id="base-url" spellcheck="false">
+          <button id="save-url" class="btn" type="button">Save</button>
+        </span>
+      </label>
+      <label class="field">Model
+        <input id="model" list="model-options" autocomplete="off" spellcheck="false">
+        <datalist id="model-options"></datalist>
+      </label>
+      <p id="model-status" class="hint"></p>
+      <div class="row">
+        <label class="field">Creativity <output id="temp-out">0.7</output>
+          <input id="temperature" type="range" min="0" max="1" step="0.1" value="0.7">
+        </label>
+        <label class="field">Seed <input id="seed" type="number" placeholder="Random"></label>
+      </div>
+      <label id="ctx-row" class="field">Context size (Ollama)
+        <select id="num_ctx">
+          <option value="8192">8,192 tokens (less memory)</option>
+          <option value="16384" selected>16,384 tokens</option>
+          <option value="32768">32,768 tokens (long sources)</option>
+        </select>
+      </label>
+
+      <h3>Internet search</h3>
+      <label class="field">Search with
+        <select id="engine"></select>
+      </label>
+      <div id="engine-key-row">
+        <label class="field">Search API key
+          <span class="inline">
+            <input id="engine-key" type="password" autocomplete="off" spellcheck="false">
+            <button id="save-engine" class="btn" type="button">Save</button>
+          </span>
+        </label>
+      </div>
+      <p class="hint">Keys are stored only on this computer, in <code>~/.sgpt/config.json</code>.</p>
+      <div class="settings-foot"><button class="btn primary" value="close">Done</button></div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
