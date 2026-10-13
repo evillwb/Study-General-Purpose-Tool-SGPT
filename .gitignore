@@ -9,3 +9,7 @@ output/*
 library/*
 !library/.gitkeep
 past_papers/
+
+# PyInstaller (packaging/sgpt.spec)
+build/
+dist/

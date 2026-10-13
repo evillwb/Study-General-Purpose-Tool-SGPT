@@ -1,0 +1,95 @@
+# Builds SGPT.exe on Windows. Every push makes a downloadable "SGPT-windows" artifact
+# (Actions tab -> the run -> Artifacts). Pushes to main also update the
+# "SGPT for Windows (latest)" release, which has a direct download link.
+name: Build SGPT.exe
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+
+  windows-exe:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -r requirements.txt pyinstaller
+      - name: Build
+        run: pyinstaller packaging/sgpt.spec --noconfirm
+      - name: Sign SGPT.exe (publisher "E")
+        shell: pwsh
+        env:
+          SIGN_PFX: ${{ secrets.SGPT_SIGN_PFX }}
+          SIGN_PASSWORD: ${{ secrets.SGPT_SIGN_PASSWORD }}
+        run: |
+          # Uses your certificate from the repository secrets if you added one
+          # (see packaging/README.md); otherwise a self-signed "CN=E" certificate.
+          if ($env:SIGN_PFX) {
+            [IO.File]::WriteAllBytes("sign.pfx", [Convert]::FromBase64String($env:SIGN_PFX))
+            $pw = $env:SIGN_PASSWORD
+          } else {
+            $pw = [guid]::NewGuid().ToString()
+            $cert = New-SelfSignedCertificate -Subject "CN=E" -Type CodeSigningCert `
+              -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(5)
+            Export-PfxCertificate -Cert $cert -FilePath sign.pfx `
+              -Password (ConvertTo-SecureString $pw -AsPlainText -Force) | Out-Null
+          }
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /f sign.pfx /p $pw /fd SHA256 `
+            /tr http://timestamp.digicert.com /td SHA256 `
+            /d "SGPT (Study General Purpose Tool)" dist\SGPT.exe
+          $code = $LASTEXITCODE
+          Remove-Item sign.pfx
+          if ($code -ne 0) { throw "Signing failed" }
+          (Get-AuthenticodeSignature dist\SGPT.exe).SignerCertificate | Format-List Subject, NotAfter
+      - name: Check that SGPT.exe starts
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\SGPT.exe -ArgumentList "--no-browser" -PassThru
+          $ok = $false
+          foreach ($i in 1..60) {
+            Start-Sleep -Seconds 2
+            try {
+              $r = Invoke-WebRequest -UseBasicParsing http://127.0.0.1:8765/api/meta
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch {}
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { throw "SGPT.exe did not start" }
+          Write-Host "SGPT.exe started and answered."
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SGPT-windows
+          path: dist/SGPT.exe
+      - name: Publish the latest release
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete sgpt-windows-latest --yes --cleanup-tag || true
+          gh release create sgpt-windows-latest dist/SGPT.exe \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "SGPT for Windows (latest)" \
+            --notes "Download SGPT.exe and double-click it. No Python needed. Built from ${GITHUB_SHA::7}."

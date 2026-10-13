@@ -11,7 +11,12 @@
 
 ## 1. Install
 
-### The easy way
+### Windows: SGPT.exe
+Download **SGPT.exe** from the repository's Releases page and double-click it. Nothing
+else to install (except Ollama, if you use local AI). Files are kept in `Documents\SGPT`.
+To build the .exe yourself, see [packaging/README.md](../packaging/README.md).
+
+### The easy way (from source)
 Double-click **`start-sgpt.bat`** (Windows) or **`start-sgpt.command`**
 (macOS/Linux). The first run creates a `.venv` folder and installs everything listed in
 `requirements.txt`, then opens the app.
@@ -99,4 +104,6 @@ to get the most faithful Word → PDF layout, install the free
 | Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
 | Port already in use | `python -m sgpt.app --port 8800` |
 | "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
+| "The system cannot find the path specified" from `start-sgpt.bat` | Extract the ZIP first (right-click → Extract All) and run the launcher from the extracted folder. If it still happens, delete the `.venv` folder and run it again, or use SGPT.exe. |
+| "Windows protected your PC" for SGPT.exe | Click **More info → Run anyway**. The .exe is signed by "E" with a self-signed certificate, which Windows doesn't trust yet. |
 | Internet search is blocked | SGPT carries on with the AI's own knowledge and shows a warning. Add your own sources for better results. |
