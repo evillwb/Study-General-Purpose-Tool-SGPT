@@ -1,3 +1,6 @@
-pymupdf>=1.24
-# Optional fallback PDF reader, used only if PyMuPDF is not installed:
-# pypdf>=4.0
+pymupdf>=1.24        # reading PDFs
+flask>=3.0           # the web app
+markdown>=3.5        # showing exams in the app
+rapidocr>=3.0        # OCR for scanned PDFs and photos (offline, models included)
+onnxruntime>=1.17    # runs the OCR models
+anthropic>=1.0       # only needed for the Anthropic Claude provider

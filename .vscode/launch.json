@@ -2,20 +2,28 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Generate practice exam",
+      "name": "Easy Exam app",
       "type": "debugpy",
       "request": "launch",
-      "module": "exam_gen",
-      "args": ["past_papers"],
+      "module": "easy_exam.app",
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     },
     {
-      "name": "Generate (debug: save extracted text)",
+      "name": "Easy Exam command line (topic search)",
       "type": "debugpy",
       "request": "launch",
-      "module": "exam_gen",
-      "args": ["past_papers", "--dump-extracted"],
+      "module": "easy_exam",
+      "args": ["--topic", "Photosynthesis", "--subject", "Biology", "--level", "GCSE", "--plan", "mcq:5,short:3"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Easy Exam command line (match past papers in library/)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "easy_exam",
+      "args": ["library", "--structure", "match"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal"
     }

@@ -3,7 +3,9 @@ __pycache__/
 .venv/
 venv/
 .pytest_cache/
+.easy-exam-cache/
 output/*
 !output/.gitkeep
-past_papers/*
-!past_papers/.gitkeep
+library/*
+!library/.gitkeep
+past_papers/
