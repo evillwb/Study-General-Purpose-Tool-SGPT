@@ -83,12 +83,15 @@ Choose the **exam language** (English, 中文, Bahasa Melayu) and the language y
 numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is recognised in
 past papers.
 
-## 5. Converting files (optional: LibreOffice)
+## 5. Converting files: keeping the original look
 
-PDF, Word (`.docx`), images, Markdown, text and HTML convert with nothing extra
-installed. To convert old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint and Excel, and
-to get the most faithful Word → PDF layout, install the free
-[LibreOffice](https://www.libreoffice.org/download/). SGPT finds it automatically.
+| Conversion | How the look is kept |
+| --- | --- |
+| Word, PowerPoint, Excel → PDF | Uses **Microsoft Office** if it's installed (Windows), otherwise the free [LibreOffice](https://www.libreoffice.org/download/): an exact copy. With neither, Word files keep their headings, tables and pictures, but fonts and page breaks may differ (SGPT tells you). |
+| PDF → Word | Same layout, with text, tables and pictures in place. |
+| Scanned PDF or photo → Word | Each page is rebuilt with OCR: the text in the same place and size, and diagrams cut out of the scan as pictures (with their labels). |
+| Scanned PDF or photo → PDF (OCR page, or "Searchable PDF") | The original pages, untouched, with hidden text behind them so you can search, select and copy. |
+| Old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint, Excel | Need Microsoft Office or LibreOffice. |
 
 ## Troubleshooting
 

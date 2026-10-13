@@ -1307,7 +1307,8 @@ function ext(name) { return (name.match(/\.[^.]+$/) || [""])[0].toLowerCase(); }
 
 function renderConvert() {
   const info = state.meta.convert;
-  $("#lo-note").textContent = info.libreoffice ? " · Office files via LibreOffice" : "";
+  $("#lo-note").textContent = info.office?.length ? ` · Office files via Microsoft ${info.office.join(", ")}`
+    : info.libreoffice ? " · Office files via LibreOffice" : "";
   $("#conv-targets").replaceChildren(...CONV_TARGETS.map(([id, label]) => el("label", {},
     el("input", { type: "radio", name: "conv-target", value: id, checked: convState.target === id,
       onchange: () => { convState.target = id; renderConvert(); } }),
@@ -1323,8 +1324,11 @@ function renderConvert() {
   const office = convState.files.filter((f) => [".doc", ".rtf", ".odt", ".pptx", ".ppt", ".odp", ".xlsx", ".xls", ".ods"].includes(ext(f.name)));
   let hint = "";
   if (bad.length) hint = `Can't convert: ${bad.map((f) => f.name).join(", ")}`;
-  else if (office.length && !info.libreoffice) hint = "Old Word, PowerPoint and Excel files need LibreOffice (free) installed: libreoffice.org";
-  else if (convState.target === "docx" && convState.files.some((f) => ext(f.name) === ".pdf")) hint = "PDF → Word keeps the layout when the PDF has real text; scans are read with OCR.";
+  else if (office.length && !info.libreoffice && !info.office?.length) hint = "Old Word, PowerPoint and Excel files need Microsoft Office or LibreOffice (free, libreoffice.org) installed.";
+  else if (convState.target === "pdf" && convState.files.some((f) => ext(f.name) === ".docx") && !info.libreoffice && !info.office?.length)
+    hint = "Word → PDF keeps headings, tables and pictures. For an exact copy (same fonts and page breaks), install Microsoft Word or LibreOffice (free).";
+  else if (convState.target === "docx" && convState.files.some((f) => /^\.(pdf|png|jpe?g|webp|bmp|tiff?|gif)$/.test(ext(f.name))))
+    hint = "Keeps the layout. Scanned pages and photos are rebuilt with OCR: the text in the same place and size, and diagrams cut out as pictures.";
   else if (convState.target === "searchable-pdf") hint = "Adds an invisible text layer to scanned PDFs and photos so you can search, select and copy the text.";
   else if (convState.target === "png") hint = "One PNG per page; several pages are saved together as a .zip.";
   $("#conv-hint").textContent = hint;
@@ -1457,11 +1461,18 @@ function renderOcrResults() {
           el("button", { class: "btn small", type: "button", onclick: async () => {
             try { await navigator.clipboard.writeText(ocrText(file)); toast("Copied."); } catch { toast("Copy failed. Use a download instead."); }
           } }, "Copy"),
-          ...["docx", "pdf", "txt", "md"].map((fmt) => el("button", { class: "btn small", type: "button",
-            onclick: () => exportText(ocrMarkdown(file), fmt, base) }, `.${fmt}`)),
-          ocrState.files[file.name] && el("button", { class: "btn small", type: "button",
-            title: "The original scan with a hidden text layer, so you can search and copy it",
-            onclick: () => runConvert([ocrState.files[file.name]], "searchable-pdf") }, "Searchable PDF"),
+          ocrState.files[file.name] && el("span", { class: "btn-group", title: "Same look as the original" },
+            el("span", { class: "group-label" }, "Same look:"),
+            el("button", { class: "btn small", type: "button",
+              title: "Editable Word file laid out like the original: text in the same place and size, diagrams as pictures",
+              onclick: () => runConvert([ocrState.files[file.name]], "docx") }, "Word"),
+            el("button", { class: "btn small", type: "button",
+              title: "The original pages with a hidden text layer, so you can search, select and copy the text",
+              onclick: () => runConvert([ocrState.files[file.name]], "searchable-pdf") }, "PDF")),
+          el("span", { class: "btn-group", title: "Just the text, including your edits below" },
+            el("span", { class: "group-label" }, "Text only:"),
+            ...[["docx", "Word"], ["txt", ".txt"], ["md", ".md"]].map(([fmt, label]) => el("button", { class: "btn small", type: "button",
+              onclick: () => exportText(ocrMarkdown(file), fmt, base) }, label))),
           el("button", { class: "btn small primary", type: "button", title: "Add this text to your exam sources", onclick: async () => {
             const form = new FormData();
             form.append("files", new File([ocrText(file)], `${base} (OCR).txt`, { type: "text/plain" }));

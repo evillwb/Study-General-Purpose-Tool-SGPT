@@ -147,3 +147,58 @@ def test_running_jobs_report_time_left(tmp_path):
     assert job.eta() is None
     c = create_app(tmp_path / "lib", tmp_path / "out").test_client()
     assert c.get("/api/jobs/running").get_json() == []
+
+
+def _scan_with_diagram(path):
+    page = pymupdf.open().new_page()
+    page.insert_text((50, 70), "Bab 2 Geometri", fontsize=16)
+    page.insert_text((50, 110), "1. The diagram shows triangle ABC. [4 markah]", fontsize=12)
+    page.draw_polyline([(100, 140), (300, 140), (200, 260), (100, 140)], color=(0, 0, 0), width=2)
+    page.insert_text((88, 150), "A", fontsize=12)
+    page.insert_text((305, 150), "B", fontsize=12)
+    page.insert_text((195, 280), "C", fontsize=12)
+    page.insert_text((50, 330), "2. Find the area of the triangle. [2 markah]", fontsize=12)
+    scan = pymupdf.open()
+    scan.new_page().insert_image(scan[0].rect, stream=page.get_pixmap(dpi=150).tobytes("png"))
+    scan.save(path)
+    return path
+
+
+def test_scan_to_word_keeps_the_layout(tmp_path):
+    from sgpt.layout import layout_pdf
+
+    scan = _scan_with_diagram(tmp_path / "scan.pdf")
+    rebuilt = pymupdf.open(layout_pdf(scan, tmp_path / "rebuilt.pdf"))[0]
+    words = {w[4]: w for w in rebuilt.get_text("words")}
+    assert words["Geometri"][1] < words["triangle"][1] < words["area"][1]  # same order on the page
+    assert abs(words["Bab"][1] - 55) < 12  # and about the same place (y in points)
+    assert len(rebuilt.get_images()) == 1  # the diagram, as a picture
+    assert "A" not in words and "C" not in words  # its labels stay in the picture
+
+    notes, steps = [], []
+    word = docx.Document(convert.convert(scan, "docx", tmp_path, notes=notes,
+                                         step=lambda n, total: steps.append(n)))
+    text = "\n".join(p.text for p in word.paragraphs)
+    assert "triangle ABC" in text and "Find the area" in text
+    assert len(word.inline_shapes) == 1 and steps == [1]
+
+
+def test_word_to_pdf_without_office_keeps_tables_and_pictures(tmp_path, monkeypatch):
+    monkeypatch.setattr(convert, "libreoffice", lambda: None)
+    monkeypatch.setattr(convert, "ms_office", lambda: set())
+    picture = tmp_path / "pic.png"
+    pymupdf.open().new_page(width=120, height=80).get_pixmap().save(picture)
+    d = docx.Document()
+    d.add_heading("Cell structure", 1)
+    d.add_paragraph("The nucleus controls the cell.")
+    table = d.add_table(rows=2, cols=2)
+    table.cell(0, 0).text, table.cell(1, 1).text = "Organelle", "Mitochondria"
+    d.add_picture(str(picture))
+    d.save(tmp_path / "notes.docx")
+    notes = []
+    pdf = convert.convert(tmp_path / "notes.docx", "pdf", tmp_path, notes=notes)
+    page = pymupdf.open(pdf)[0]
+    assert "Cell structure" in page.get_text() and "Mitochondria" in page.get_text()
+    assert page.get_images()
+    assert notes and "LibreOffice" in notes[0]
+    assert convert.targets_for(".pptx") == []  # needs Office or LibreOffice

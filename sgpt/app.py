@@ -171,6 +171,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         return jsonify(
             ocr=ocr.available(),
             convert={"targets": convert.TARGETS, "libreoffice": bool(convert.libreoffice()),
+                     "office": sorted(convert.ms_office()),
                      "inputs": sorted(convert.INPUTS)},
             question_types=[{"id": k, "label": v["label"], "marks": v["marks"]}
                             for k, v in QUESTION_TYPES.items()],
@@ -678,7 +679,13 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
                                 step=lambda n, total, name=src.name: job.note(
                                     f"{name}: OCR page {n} of {total}")))
                         else:
-                            results.append(convert.convert(src, target, out_dir))
+                            notes: list[str] = []
+                            results.append(convert.convert(
+                                src, target, out_dir, notes=notes, should_stop=job.cancelled,
+                                step=lambda n, total, name=src.name: job.note(
+                                    f"{name}: rebuilding page {n} of {total} with OCR")))
+                            for note in notes:
+                                job.warn(note)
                     except convert.ConvertError as exc:
                         job.warn(str(exc))
             job.result = [converted_info(r) for r in results]
