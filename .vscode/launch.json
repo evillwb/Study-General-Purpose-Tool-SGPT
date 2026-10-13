@@ -1,0 +1,23 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Generate practice exam",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "exam_gen",
+      "args": ["past_papers"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": "Generate (debug: save extracted text)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "exam_gen",
+      "args": ["past_papers", "--dump-extracted"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    }
+  ]
+}
