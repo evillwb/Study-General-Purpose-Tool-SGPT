@@ -203,3 +203,30 @@ def test_text_only_model_gets_no_pictures(sample_pdf, fake_ai, tmp_path):
     c = create_app(sample_pdf, tmp_path / "out", host).test_client()
     assert _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])["state"] == "done"
     assert not any("images" in m for r in server.requests for m in r["messages"])
+
+
+def test_each_file_has_its_own_language(tmp_path, fake_ai):
+    host, server = fake_ai
+    lib = tmp_path / "lib"
+    lib.mkdir()
+    (lib / "nota.txt").write_text("Fotosintesis ialah proses yang berlaku dalam daun. " * 20, encoding="utf-8")
+    (lib / "笔记.txt").write_text("光合作用是植物利用光能制造葡萄糖的过程。" * 20, encoding="utf-8")
+    (lib / "notes.txt").write_text("Photosynthesis is the process that happens in the leaf. " * 20)
+    c = create_app(lib, tmp_path / "out", host).test_client()
+    files = {f["name"]: f for f in c.get("/api/library").get_json()}
+    assert files["nota.txt"]["detected"] == ["ms"] and files["笔记.txt"]["detected"] == ["zh"]
+    assert files["notes.txt"]["detected"] == ["en"] and files["notes.txt"]["language"] == "auto"
+
+    c.patch("/api/library/notes.txt", json={"language": "ms"})  # the user knows better
+    assert {f["name"]: f for f in c.get("/api/library").get_json()}["notes.txt"]["language"] == "ms"
+
+    job = _wait(c, c.post("/api/generate", json={"topic": "Photosynthesis", "language": "en",
+                                                  "structure": "custom", "plan": [{"type": "short", "count": 1}],
+                                                  "sources": {"use_files": True}}).get_json()["id"])
+    assert job["state"] == "done", job
+    readers = [r["messages"][0]["content"] for r in server.requests if "study notes" in r["messages"][0]["content"]]
+    assert any("Some of the material is in Simplified Chinese" in r for r in readers)
+    assert any("Some of the material is in Malay" in r for r in readers)
+    writer = next(r for r in server.requests if "brand-new" in r["messages"][0]["content"])
+    rule = writer["messages"][0]["content"]
+    assert "in English, even when" in rule and "Malay" in rule and "Chinese" in rule

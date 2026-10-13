@@ -13,7 +13,13 @@ from datetime import datetime
 from . import i18n
 from .generator import NOTES_LIMIT, Progress, _as_int, _chunks, _text, summarise_source
 from .ollama_client import parse_json
-from .sources import Source
+from .sources import Source, source_languages
+
+
+def _rule(o: dict) -> str:
+    """Write in the chosen language; the sources may be in others."""
+    return i18n.write_rule(o.get("language", "en"), o.get("source_languages"))
+
 
 KINDS = {"notes": "Notes", "flashcards": "Flashcards", "vocab": "Vocabulary",
          "quiz": "MCQ quiz", "grammar": "Grammar test"}
@@ -100,7 +106,7 @@ def make_notes(client, material: str, o: dict, steps, progress) -> dict:
               f"\nTopic: {o['topic'] or 'as in the material'}\nLevel: {o.get('level') or 'secondary school'}"
               f"\nStart with a '# ' title. Write in Markdown only (no JSON, no code fences)."
               f"{_extra(o)}\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-    text = client.chat(_SYSTEM + i18n.write_rule(o["language"]), prompt, max_tokens=8192,
+    text = client.chat(_SYSTEM + _rule(o), prompt, max_tokens=8192,
                        should_stop=progress.cancelled)
     text = re.sub(r"^```(?:markdown|md)?\s*|\s*```$", "", text.strip())
     title = next((ln[2:].strip() for ln in text.splitlines() if ln.startswith("# ")), o["topic"] or "Notes")
@@ -119,7 +125,7 @@ def make_guide(client, material: str, o: dict, steps, progress) -> dict:
     overview tables computed from the question bank and past-paper analysis when available."""
     bank, analysis = o.get("bank"), o.get("analysis") or {}
     topic = o["topic"] or analysis.get("subject") or "the course"
-    system = GUIDE_SYSTEM + i18n.write_rule(o["language"])
+    system = GUIDE_SYSTEM + _rule(o)
 
     # 1. Chapters: from the question bank, the analysis, or the AI.
     if bank:
@@ -218,7 +224,7 @@ def make_flashcards(client, material: str, o: dict, steps, progress) -> dict:
                   + (f"Do not repeat: {avoid}\n" if avoid else "") + _extra(o) +
                   '\nReply with JSON: {"cards": [{"front": "...", "back": "..."}]}'
                   f"\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-        items = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "cards", progress)
+        items = _ask_json(client, _SYSTEM + _rule(o), prompt, "cards", progress)
         new = [{"front": _text(c.get("front")), "back": _text(c.get("back"))}
                for c in items if isinstance(c, dict) and _text(c.get("front")) and _text(c.get("back"))]
         if not new:
@@ -252,7 +258,7 @@ def make_vocab(client, material: str, o: dict, steps, progress) -> dict:
                   '\nReply with JSON: {"words": [{"word": "...", "part_of_speech": "...", "meaning": "...",'
                   ' "example": "...", "translation": "...", "synonyms": ["..."]}]}'
                   + (f"\n\nMATERIAL:\n{material}" if material and not batch else ""))
-        rows = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "words", progress)
+        rows = _ask_json(client, _SYSTEM + _rule(o), prompt, "words", progress)
         for r in rows:
             if isinstance(r, dict) and _text(r.get("word")) and _text(r.get("meaning")):
                 items.append({k: _text(r.get(k)) for k in ("word", "part_of_speech", "meaning",
@@ -278,7 +284,7 @@ def make_quiz(client, material: str, o: dict, steps, progress) -> dict:
                   '\nReply with JSON: {"questions": [{"question": "...", "options": ["...", "...", "...", "..."],'
                   ' "answer": 0, "explanation": "why the answer is right"}]} where "answer" is the index 0-3.'
                   f"\n\nMATERIAL:\n{material or '(none: use your own accurate knowledge)'}")
-        rows = _ask_json(client, _SYSTEM + i18n.write_rule(o["language"]), prompt, "questions", progress)
+        rows = _ask_json(client, _SYSTEM + _rule(o), prompt, "questions", progress)
         new = []
         for r in rows:
             options = [re.sub(r"^\s*\(?[A-Da-d][).:]\s+", "", _text(x)) for x in (r.get("options") or [])
@@ -370,7 +376,7 @@ def _check_items(client, items: list[dict], o: dict, progress: Progress) -> list
               'Reply with JSON: {"checks": [{"n": 1, "ok": true, "answer": ...}]}\n\nITEMS:\n'
               + json.dumps(numbered, ensure_ascii=False, indent=1))
     system = ("You are a strict independent examiner checking test items. Reply with JSON only."
-              + i18n.write_rule(o.get("language", "en")))
+              + _rule(o))
     checks = _ask_json(client, system, prompt, "checks", progress, max_tokens=4096, think=True)
     if not checks:
         progress.warn("could not double-check some items")
@@ -414,7 +420,8 @@ def generate(client, kind: str, sources: list[Source], options: dict,
     if kind not in MAKERS:
         raise ValueError(f"Unknown study tool: {kind}")
     progress = progress or Progress()
-    o = {"topic": "", **options, "language": i18n.lang(options.get("language"))}
+    o = {"topic": "", **options, "language": i18n.lang(options.get("language")),
+         "source_languages": source_languages(sources)}
     big = sum(len(s.text) for s in sources) > 9000
     note_steps = sum(len(_chunks(s.text, 9000)) for s in sources) if big else 0
     steps = _Steps(progress, note_steps + 4)
@@ -427,7 +434,8 @@ def generate(client, kind: str, sources: list[Source], options: dict,
     return {"id": uuid.uuid4().hex[:10], "kind": kind,
             "created": datetime.now().isoformat(timespec="seconds"),
             "model": getattr(client, "model", ""), "language": o["language"],
-            "options": {k: v for k, v in options.items() if k not in ("text", "bank", "analysis")},
+            "options": {k: v for k, v in options.items()
+                        if k not in ("text", "bank", "analysis", "source_languages")},
             "sources": [s.citation() for s in sources], **result}
 
 

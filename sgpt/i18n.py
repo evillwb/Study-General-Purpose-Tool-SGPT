@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 LANGUAGES = {
     "en": {"label": "English", "prompt": "English", "wiki": "en", "region": "us-en"},
     "zh": {"label": "中文 (Chinese)", "prompt": "Simplified Chinese (简体中文)", "wiki": "zh",
@@ -134,14 +136,87 @@ def marks(code: str, n: int) -> str:
     return f"{n} mark{'s' if n != 1 else ''}"
 
 
-def write_rule(code: str, source: str | None = None) -> str:
-    """Language instruction added to every writing prompt."""
+def write_rule(code: str, source: str | list | None = None) -> str:
+    """Language instruction added to every writing prompt.
+
+    source is the language of the material: one code, several (a list, or "zh,en"), or
+    "auto"/None when unknown.
+    """
     rule = (f" Write ALL text (questions, options, answers, notes and marking points) in "
-            f"{LANGUAGES[lang(code)]['prompt']}. Keep JSON keys and the \"type\" and "
-            f"\"difficulty\" values in English.")
-    if source in LANGUAGES and source != lang(code):
-        rule += (f" The source material is in {LANGUAGES[source]['prompt']}; translate what "
-                 f"you use.")
-    elif not source or source == "auto":
-        rule += " The source material may be in another language; translate what you use."
+            f"{LANGUAGES[lang(code)]['prompt']}, even when the material is in another "
+            f"language. Keep JSON keys and the \"type\" and \"difficulty\" values in English.")
+    codes = source if isinstance(source, (list, tuple, set)) else (source or "auto").split(",")
+    others = [c for c in dict.fromkeys(codes) if c in LANGUAGES and c != lang(code)]
+    if others:
+        names = " and ".join(LANGUAGES[c]["prompt"] for c in others)
+        rule += f" Some of the material is in {names}; translate what you use."
+    elif "auto" in codes or not any(c in LANGUAGES for c in codes):
+        rule += " The material may be in another language; translate what you use."
     return rule
+
+
+_MALAY = set("""yang dan ialah adalah untuk dengan dalam ini itu tidak akan kepada pada daripada
+boleh bagi oleh soalan jawab markah berikut setiap semua nyatakan terangkan hitung jika atau
+juga kerana tersebut mereka kita sebuah suatu antara selepas sebelum hendaklah""".split())
+_ENGLISH = set("""the and is are of to in that for with this which answer question marks state
+explain calculate if or also because these they we an between after before should was were""".split())
+_CJK_CHAR = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+_WORD = re.compile(r"[A-Za-z]+")
+
+
+def detect_language(text: str) -> str:
+    """Best guess of the main language of a text: "zh", "ms" or "en" ("" if too short)."""
+    sample = text[:20000]
+    cjk = len(_CJK_CHAR.findall(sample))
+    words = [w.lower() for w in _WORD.findall(sample)]
+    if cjk + len(words) < 8:
+        return ""
+    if cjk > (cjk + len(words)) * 0.4:  # one Chinese character is about one word
+        return "zh"
+    malay = sum(w in _MALAY for w in words)
+    english = sum(w in _ENGLISH for w in words)
+    return "ms" if malay >= 3 and malay > english * 0.8 else "en"
+
+
+def languages_in(text: str) -> list[str]:
+    """Every language with a real share of the text, main one first (e.g. ["zh", "en"]
+    for a bilingual UEC paper)."""
+    main = detect_language(text)
+    if not main:
+        return []
+    found = [main]
+    sample = text[:20000]
+    cjk = len(_CJK_CHAR.findall(sample))
+    words = len(_WORD.findall(sample))
+    if main == "zh" and words > (cjk + words) * 0.2:
+        latin = detect_language(_CJK_CHAR.sub(" ", sample))
+        if latin:
+            found.append(latin)
+    elif main != "zh" and cjk > (cjk + words) * 0.15:
+        found.append("zh")
+    return found
+
+
+def clearly_not_in(text: str, code: str) -> bool:
+    """True only when the text is plainly in another language than code (used to catch
+    questions the AI wrote in the wrong language). Short or formula-only text is never
+    flagged."""
+    sample = text[:6000]
+    cjk = len(_CJK_CHAR.findall(sample))
+    words = [w.lower() for w in _WORD.findall(sample)]
+    if lang(code) == "zh":
+        return len(words) >= 12 and cjk < (cjk + len(words)) * 0.15
+    if cjk >= 8 and cjk > (cjk + len(words)) * 0.4:
+        return True
+    malay = sum(w in _MALAY for w in words)
+    english = sum(w in _ENGLISH for w in words)
+    if lang(code) == "ms":
+        return english >= 5 and english > malay * 2
+    return malay >= 5 and malay > english * 2
+
+
+def describe_rule(code: str) -> str:
+    """For analysis and sorting: descriptive text in the chosen language, data in English."""
+    return (f" Write all descriptive text (names of topics and chapters, instructions, notes, "
+            f"reasons) in {LANGUAGES[lang(code)]['prompt']}, whatever language the papers are in. "
+            f"Keep JSON keys and fixed values such as question types in English.")

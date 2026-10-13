@@ -78,10 +78,17 @@ setting and Anthropic's automatic fallback to another model if a request is decl
 
 ## 4. Languages
 
-Choose the **exam language** (English, 中文, Bahasa Melayu) and the language your
-**sources** are in. Sources in one language can produce an exam in another. Question
-numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is recognised in
-past papers.
+Everything SGPT makes can be in **English, 中文 or Bahasa Melayu**: choose the exam
+language on the Exam page, and the language on the Study and Question bank pages.
+
+Sources don't have to match. Each file's language is detected (shown as "Auto: 中文",
+"Auto: English + 中文" for a bilingual paper, and so on); change it in the file list if the
+guess is wrong. The AI is told which languages the sources are in and translates what it
+uses. Afterwards SGPT checks every question and answer, and translates any that came out in
+the wrong language (you'll see a note in the progress list).
+
+Question numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is
+recognised in past papers.
 
 ## 5. Converting files: keeping the original look
 

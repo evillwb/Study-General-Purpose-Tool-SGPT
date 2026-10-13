@@ -195,7 +195,7 @@ function wireSettings() {
 }
 
 // ---------- Builder: topic + sources --------------------------------------------
-const BUILDER_FIELDS = ["topic", "subject", "level", "language", "source_language", "src-text", "src-links",
+const BUILDER_FIELDS = ["topic", "subject", "level", "language", "src-text", "src-links",
   "instructions", "minutes", "challenge"];
 
 function saveBuilder() {
@@ -229,6 +229,8 @@ function loadBuilder() {
   }
 }
 
+const LANG_SHORT = { en: "English", zh: "中文", ms: "Melayu" };
+
 async function loadLibrary() {
   state.library = await api("/api/library").catch(() => []);
   const list = $("#file-list");
@@ -245,6 +247,12 @@ async function loadLibrary() {
       onchange: (e) => updateFile(f.name, { role: e.target.value }) },
       el("option", { value: "paper", selected: f.role === "paper" }, "Past paper"),
       el("option", { value: "notes", selected: f.role !== "paper" }, "Notes"));
+    const detected = (f.detected || []).map((c) => LANG_SHORT[c] || c).join(" + ");
+    const lang = el("select", { class: "role lang", "aria-label": `Language of ${f.name}`,
+      title: "The language this file is in. The exam is always written in the exam language.",
+      onchange: (e) => updateFile(f.name, { language: e.target.value }) },
+      el("option", { value: "auto", selected: f.language === "auto" }, detected ? `Auto: ${detected}` : "Auto"),
+      ...Object.entries(LANG_SHORT).map(([c, label]) => el("option", { value: c, selected: f.language === c }, label)));
     const use = el("label", { class: "switch", title: f.use ? "Used" : "Not used" },
       el("input", { type: "checkbox", checked: f.use, "aria-label": `Use ${f.name}`,
         onchange: (e) => updateFile(f.name, { use: e.target.checked }) }),
@@ -252,7 +260,7 @@ async function loadLibrary() {
     return el("li", { class: f.use ? "" : "off" },
       el("span", { class: `file-icon ${f.type}` }, f.type),
       el("div", { class: "item-main" }, el("div", { class: "item-name", title: f.name }, f.name), subEl),
-      role,
+      el("div", { class: "file-selects" }, role, lang),
       el("div", { class: "file-actions" }, use,
         el("button", { class: "icon-btn", type: "button", title: "Remove", "aria-label": `Remove ${f.name}`,
           onclick: () => deleteFile(f.name) }, "✕")));
@@ -285,7 +293,7 @@ function renderAnalysisBar() {
 
 async function startAnalysis() {
   if (state.jobId) return toast("Please wait for the current job to finish.");
-  try { followJob(await api("/api/analyse", { json: aiPayload() })); }
+  try { followJob(await api("/api/analyse", { json: { ...aiPayload(), language: $("#language").value } })); }
   catch (e) { toast(e.message); }
 }
 
@@ -473,7 +481,7 @@ async function startGeneration() {
   const payload = {
     ...aiPayload(),
     topic: $("#topic").value, subject: $("#subject").value, level: $("#level").value,
-    language: $("#language").value, source_language: $("#source_language").value,
+    language: $("#language").value, source_language: "auto",
     text: $("#src-text").value, urls: links().join("\n"), web: $("input[name=web]:checked").value,
     structure: $("input[name=structure]:checked").value, plan,
     difficulty: $("input[name=difficulty]:checked").value,
@@ -1534,12 +1542,15 @@ function wire() {
   convDrop.addEventListener("drop", (e) => addConvFiles([...e.dataTransfer.files]));
   $("#conv-go").addEventListener("click", () => runConvert(convState.files, convState.target));
 
-  $("#bank-build").addEventListener("click", () => runBankJob("/api/bank/build", { subject: $("#subject").value }));
+  $("#bank-language").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+  $("#bank-language").value = store.get("bankLanguage", $("#language").value || "en");
+  $("#bank-language").addEventListener("input", (e) => store.set("bankLanguage", e.target.value));
+  $("#bank-build").addEventListener("click", () => runBankJob("/api/bank/build", { subject: $("#subject").value, language: $("#bank-language").value }));
   $("#bank-answers").addEventListener("click", () => {
     const ids = bankVisible().flatMap(([, qs]) => qs).filter((q) => !q.answer).map((q) => q.id).slice(0, 60);
     if (!ids.length) return toast("These questions already have answers.");
     if (ids.length > 20 && !confirm(`Write and double-check answers for ${ids.length} questions? This can take a while.`)) return;
-    runBankJob("/api/bank/solve", { ids, language: $("#language").value });
+    runBankJob("/api/bank/solve", { ids, language: $("#bank-language").value });
   });
   $$("[data-bank-tab]").forEach((t) => t.addEventListener("click", () => { bankState.tab = t.dataset.bankTab; renderBank(); }));
   ["bank-search", "bank-sort", "bank-n"].forEach((id) => $("#" + id).addEventListener("input", renderBank));
@@ -1593,7 +1604,7 @@ async function init() {
   catch { document.body.prepend(el("p", { class: "note warn" }, "Could not reach the SGPT server. Is it still running?")); return; }
   $("#provider").replaceChildren(...state.meta.providers.map((p) => el("option", { value: p.id }, p.label)));
   $("#language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
-  $("#source_language").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+
   $("#engine").replaceChildren(...state.meta.search.engines.map((e) => el("option", { value: e.id }, e.label)));
   $("#ocr-missing").hidden = Boolean(state.meta.ocr);
   loadBuilder();

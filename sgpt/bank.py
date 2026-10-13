@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from pathlib import Path
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 
 from . import i18n, prompts
 from .generator import (QUESTION_TYPES, Progress, _as_int, _text, pictures, solve_questions,
@@ -60,13 +60,15 @@ def _picture(image_dir: Path | None, q: dict) -> bytes | None:
 
 
 def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[str] = (),
-               progress: Progress | None = None, image_dir: Path | None = None) -> dict:
+               progress: Progress | None = None, image_dir: Path | None = None,
+               language: str = "") -> dict:
     """Every question of the past papers, sorted into chapters with a difficulty rating.
 
     With image_dir, a picture of each question (cut from its page) is saved there, shown
     in the bank, and given to the AI when the model can see images.
     """
     progress = progress or Progress()
+    rule = i18n.describe_rule(language) if language else ""
     done, total = 0, len(papers) * (2 if image_dir else 1) + 2
 
     questions: list[dict] = []
@@ -109,7 +111,7 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
     listing = "\n".join(f"- {_snippet(q, 160)}" for q in questions[:120])
     chapters: list[str] = []
     for _ in range(2):
-        reply = client.chat(prompts.BANK_CHAPTERS_SYSTEM,
+        reply = client.chat(prompts.BANK_CHAPTERS_SYSTEM + rule,
                             prompts.BANK_CHAPTERS_PROMPT.format(subject=subject or "school",
                                                                 hint=hint, questions=listing),
                             json_mode=True, max_tokens=2048, should_stop=progress.cancelled)
@@ -130,7 +132,7 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
         images, note = pictures(client, [{"id": q["id"], "picture": _picture(image_dir, q)} for q in batch],
                                 "the question with id")
         for _ in range(2):
-            reply = client.chat(prompts.BANK_CLASSIFY_SYSTEM,
+            reply = client.chat(prompts.BANK_CLASSIFY_SYSTEM + rule,
                                 prompts.BANK_CLASSIFY_PROMPT.format(chapters="; ".join(chapters),
                                                                     questions=items) + note,
                                 json_mode=True, max_tokens=4096, should_stop=progress.cancelled,
@@ -165,6 +167,7 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
         "created": datetime.now().isoformat(timespec="seconds"),
         "model": getattr(client, "model", ""),
         "subject": subject,
+        "language": language,
         "papers": [p.title for p in papers],
         "chapters": [c for c in order if any(q["chapter"] == c for q in questions)],
         "questions": questions,

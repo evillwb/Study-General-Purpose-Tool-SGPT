@@ -223,3 +223,16 @@ Reply with JSON: {{"questions": [{{"id": "...", "chapter": "...", "topic": "..."
 
 QUESTIONS:
 {questions}"""
+
+TRANSLATE_SYSTEM = (
+    "You translate exam papers and their marking schemes accurately. Reply with JSON only."
+)
+
+TRANSLATE_PROMPT = """Translate every text value in these exam items into {language}.
+Keep the meaning, numbers, units, formulas, names of chemicals and the order of options
+exactly the same. Keep the JSON structure and keys unchanged (keys stay in English).
+
+ITEMS:
+{items}
+
+Reply with JSON: {{"items": [the same items, translated]}}"""

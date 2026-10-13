@@ -43,10 +43,9 @@
           <label class="field">Subject <input id="subject" placeholder="e.g. Biology"></label>
           <label class="field">Level <input id="level" placeholder="e.g. GCSE, Year 9"></label>
         </div>
-        <div class="row">
-          <label class="field">Exam language <select id="language"></select></label>
-          <label class="field">Sources are in <select id="source_language"><option value="auto">Any language (auto)</option></select></label>
-        </div>
+        <label class="field">Exam language <select id="language"></select></label>
+        <p class="hint field-hint">The exam, answers and marking scheme are all written in this language.
+          Sources can be in any language.</p>
       </section>
 
       <section class="panel">
@@ -329,7 +328,11 @@
         <h1>Question bank</h1>
         <p class="muted">Every question from your past-year papers, sorted by chapter, with the hardest ones picked out.</p>
       </div>
-      <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+      <div class="bank-actions">
+        <label class="field compact" title="Chapter names, topics, reasons and answers are written in this language. The questions stay as printed.">Language
+          <select id="bank-language"></select></label>
+        <button id="bank-build" class="btn primary" type="button">Sort my past-year questions</button>
+      </div>
     </div>
     <p id="bank-note" class="note" hidden></p>
     <div id="bank-progress" class="panel ocr-progress" hidden>

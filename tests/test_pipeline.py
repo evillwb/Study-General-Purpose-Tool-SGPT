@@ -227,7 +227,13 @@ def test_chinese_exam_language(fake_ai, tmp_path):
         assert heading in md
     writer = next(r for r in server.requests if "brand-new" in r["messages"][0]["content"])
     assert "Simplified Chinese" in writer["messages"][0]["content"]
-    assert "source material is in English" in writer["messages"][0]["content"]
+    assert "Some of the material is in English" in writer["messages"][0]["content"]
+    # The fake model writes its questions in English. Ones with enough words to judge are
+    # caught and translated; short formula-like ones are left alone.
+    from sgpt.generator import _language_text
+    from sgpt.i18n import clearly_not_in
+    assert any(q["question"].startswith("（译）") for q in exam["questions"])
+    assert not any(clearly_not_in(_language_text(q), "zh") for q in exam["questions"])
 
 
 def test_difficulty_targets_and_custom_mix():

@@ -230,11 +230,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         for path in library_files(library_dir):
             entry = meta.get(path.name, {})
             item = {"name": path.name, "type": path.suffix.lower().lstrip("."),
-                    "use": entry.get("use", True)}
+                    "use": entry.get("use", True), "language": entry.get("language", "auto")}
             try:
                 src = load_file(path, entry.get("role"))
                 item.update(role=src.kind, chars=len(src.text), readable=len(src.text) >= 200,
-                            ocr=src.ocr,
+                            ocr=src.ocr, detected=src.languages,
                             pages=src.paper.page_count if src.paper else None,
                             questions=len(src.paper.questions) if src.paper else None)
             except Exception as exc:  # a corrupt file should not break the whole list
@@ -263,6 +263,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             entry["role"] = data["role"]
         if "use" in data:
             entry["use"] = bool(data["use"])
+        if data.get("language") == "auto":
+            entry.pop("language", None)
+        elif data.get("language") in LANGUAGES:
+            entry["language"] = data["language"]
         save_library_meta(library_dir, meta)
         return jsonify(ok=True)
 
@@ -322,7 +326,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             papers = selected_papers(job.warn)
             if not papers:
                 raise RuntimeError("No past papers selected. Add a PDF and mark it as a past paper.")
-            result = analyse_papers(c, papers, progress=job)
+            result = analyse_papers(c, papers, progress=job, language=s.get("language") or "")
             data = save_analysis(papers, result, c.model)
             job.result = {k: v for k, v in data.items() if k != "key"}
             job.step(1, 1, "Done")
@@ -369,7 +373,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             shutil.rmtree(bank_images, ignore_errors=True)
             bank = qbank.build_bank(c, papers, subject=s.get("subject") or analysis.get("subject") or "",
                                     topics=analysis.get("topics") or [], progress=job,
-                                    image_dir=bank_images)
+                                    image_dir=bank_images, language=s.get("language") or "")
             save_bank(papers, bank)
             job.result = bank
 

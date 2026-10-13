@@ -632,3 +632,15 @@ output { font-weight: 400; color: var(--text); }
 .btn-group { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px;
   border: 1px solid var(--border); border-radius: 10px; }
 .btn-group .group-label { font-size: 12px; color: var(--muted); margin-right: 2px; }
+
+/* File list (exam sources): the role and language menus sit under the file name */
+#file-list li { grid-template-columns: auto 1fr auto; }
+#file-list li .file-actions { grid-column: 3; grid-row: 1; }
+.file-selects { grid-column: 2 / 4; grid-row: 2; display: flex; gap: 6px; flex-wrap: wrap; }
+.file-selects .role { grid-column: auto; grid-row: auto; }
+.file-selects .lang { max-width: 170px; }
+.field-hint { margin: -4px 0 0; }
+
+.bank-actions { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.field.compact { gap: 4px; font-size: 13px; }
+.field.compact select { min-width: 150px; }

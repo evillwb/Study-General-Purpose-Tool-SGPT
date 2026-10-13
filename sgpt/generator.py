@@ -9,6 +9,7 @@ model answers and marking scheme.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import uuid
@@ -19,7 +20,7 @@ from datetime import datetime
 from . import i18n, prompts
 from .ollama_client import parse_json
 from .pdf_extract import ExamPaper
-from .sources import Source
+from .sources import Source, source_languages
 
 QUESTION_TYPES = {
     "mcq": {"label": "Multiple choice", "marks": 1,
@@ -231,7 +232,7 @@ def paper_parts(paper: ExamPaper, max_chars: int) -> list[str]:
 
 
 def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress,
-                  steps: "_Steps | None" = None) -> dict:
+                  steps: "_Steps | None" = None, language: str = "") -> dict:
     parts = paper_parts(paper, max_chars)
     blueprints = []
     for i, part in enumerate(parts):
@@ -242,7 +243,8 @@ def analyse_paper(client, paper: ExamPaper, max_chars: int, progress: Progress,
                 "list the topics in this part.)" if len(parts) > 1 else "")
         prompt = prompts.ANALYSE_PROMPT.format(name=paper.path.name, text=part) + note
         for _ in range(2):
-            reply = client.chat(prompts.ANALYSE_SYSTEM, prompt, json_mode=True, max_tokens=2048,
+            system = prompts.ANALYSE_SYSTEM + (i18n.describe_rule(language) if language else "")
+            reply = client.chat(system, prompt, json_mode=True, max_tokens=2048,
                                 should_stop=progress.cancelled)
             try:
                 blueprints.append(normalise_blueprint(parse_json(reply), paper))
@@ -290,13 +292,15 @@ def merge_blueprints(blueprints: list[dict]) -> dict:
 
 
 def analyse_papers(client, papers: list[Source], max_chars: int = 12000,
-                   progress: Progress | None = None, steps: "_Steps | None" = None) -> dict:
+                   progress: Progress | None = None, steps: "_Steps | None" = None,
+                   language: str = "") -> dict:
     """Analyse past papers one by one; returns {"merged": blueprint, "papers": [...]}."""
     progress = progress or Progress()
     steps = steps or _Steps(progress, analysis_steps(papers, max_chars))
     per_paper = []
     for s in papers:
-        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress, steps)})
+        per_paper.append({"name": s.title, **analyse_paper(client, s.paper, max_chars, progress, steps,
+                                                           language)})
     return {"merged": merge_blueprints(per_paper), "papers": per_paper}
 
 
@@ -318,6 +322,8 @@ def summarise_source(client, source: Source, topic: str, max_chars: int,
                      steps: _Steps, progress: Progress, language: str = "en",
                      source_language: str = "auto") -> str:
     notes = []
+    if source_language == "auto" and source.languages:
+        source_language = source.languages
     for i, chunk in enumerate(_chunks(source.text, max_chars, NOTE_PARTS)):
         steps(f"Reading {source.title}" + (f" (part {i + 1})" if i else ""))
         reply = client.chat(prompts.NOTES_SYSTEM + i18n.write_rule(language, source_language),
@@ -638,7 +644,7 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
                    + note_steps + 2)
 
     if need_analysis:
-        analysis = analyse_papers(client, papers, request.max_chars, progress, steps)
+        analysis = analyse_papers(client, papers, request.max_chars, progress, steps, request.language)
     blueprint = (analysis or {}).get("merged")
 
     notes = [summarise_source(client, s, request.topic or request.subject, request.max_chars,
@@ -655,6 +661,8 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
     mix = difficulty_mix(request, blueprint)
     info["difficulty_text"] = _difficulty_text(mix, request.challenge, blueprint)
     ctx = _context(request, info, notes_text, papers, rng)
+    if request.source_language == "auto":
+        ctx["source_language"] = ",".join(source_languages(sources)) or "auto"
     sections = (_plan_sections(request, blueprint if use_papers else None)
                 or _plan_sections(ExamRequest(), None))
     # Give every question a target level, easiest first within each section.
@@ -689,6 +697,7 @@ def generate_exam(client, sources: list[Source], request: ExamRequest | None = N
                 progress.warn("Rewriting question(s) " + ", ".join(str(q["number"]) for q in flagged)
                               + " that failed the check")
                 _replace_flagged(client, ctx, questions, flagged, rng, progress)
+    fix_language(client, ctx, questions, progress)
     progress.step(steps.total, steps.total, "Done")
 
     total = sum(q["marks"] for q in questions)
@@ -742,8 +751,71 @@ def regenerate_question(client, exam: dict, number: int, progress: Progress | No
     solve_questions(client, ctx, [q], progress)
     if exam.get("verified", True):
         verify_questions(client, ctx, [q], progress)
+    fix_language(client, ctx, [q], progress)
     exam["questions"] = [q if x["number"] == number else x for x in exam["questions"]]
     return q
+
+
+_TRANSLATABLE = ("question", "answer", "final_answer", "accept")
+
+
+def _language_text(q: dict) -> str:
+    return "\n".join([q.get("question", ""), *q.get("options", []),
+                      *(p["text"] for p in q.get("parts", [])), q.get("answer", ""),
+                      q.get("final_answer", ""), *(p["point"] for p in q.get("marking_points", []))])
+
+
+def fix_language(client, ctx: dict, questions: list[dict], progress: Progress) -> list[dict]:
+    """Translate questions (and their answers) that came out in the wrong language.
+
+    Sources in other languages sometimes leak into the output, especially with small
+    models. Returns the questions that were translated."""
+    code = ctx.get("language") or "en"
+    wrong = [q for q in questions if i18n.clearly_not_in(_language_text(q), code)]
+    fixed = []
+    for start in range(0, len(wrong), SOLVE_BATCH):
+        batch = wrong[start:start + SOLVE_BATCH]
+        items = [{"n": q["number"], **{k: q.get(k, "") for k in _TRANSLATABLE},
+                  "options": q.get("options", []),
+                  "parts": [{"label": p["label"], "text": p["text"]} for p in q.get("parts", [])],
+                  "marking_points": [{"point": p["point"], "marks": p["marks"]}
+                                     for p in q.get("marking_points", [])]} for q in batch]
+        prompt = prompts.TRANSLATE_PROMPT.format(language=i18n.LANGUAGES[i18n.lang(code)]["prompt"],
+                                                 items=json.dumps(items, ensure_ascii=False, indent=1))
+        try:
+            data = parse_json(client.chat(prompts.TRANSLATE_SYSTEM, prompt, json_mode=True,
+                                          max_tokens=8192, should_stop=progress.cancelled))
+        except ValueError:
+            continue
+        rows = data.get("items") if isinstance(data, dict) else None
+        by_n = {_as_int(r.get("n")): r for r in rows or [] if isinstance(r, dict)}
+        for q in batch:
+            r = by_n.get(q["number"])
+            if not r:
+                continue
+            fixed.append(q)
+            for key in _TRANSLATABLE:
+                if _text(r.get(key)) and q.get(key):
+                    q[key] = _text(r.get(key))
+            if isinstance(r.get("options"), list) and len(r["options"]) == len(q.get("options", [])):
+                q["options"] = [_text(o) for o in r["options"]]
+            parts = r.get("parts")
+            if isinstance(parts, list) and len(parts) == len(q.get("parts", [])):
+                for p, new in zip(q["parts"], parts):
+                    if isinstance(new, dict) and _text(new.get("text")):
+                        p["text"] = _text(new.get("text"))
+            points = r.get("marking_points")
+            if isinstance(points, list) and len(points) == len(q.get("marking_points", [])):
+                for p, new in zip(q["marking_points"], points):
+                    if isinstance(new, dict) and _text(new.get("point")):
+                        p["point"] = _text(new.get("point"))
+    if fixed:
+        progress.warn(f"Translated question(s) {', '.join(str(q['number']) for q in fixed)} into "
+                      f"{i18n.LANGUAGES[i18n.lang(code)]['label']}: they came out in another language")
+    if len(fixed) < len(wrong):
+        progress.warn("Question(s) " + ", ".join(str(q["number"]) for q in wrong if q not in fixed)
+                      + " may not be in the chosen language: the translation failed")
+    return fixed
 
 
 def renumber(exam: dict) -> None:

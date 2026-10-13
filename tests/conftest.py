@@ -96,6 +96,13 @@ def fake_reply(system: str, prompt: str) -> str:
         if "Answer the student's question" in prompt:
             return "Chlorophyll absorbs **light**."
         return "# Photosynthesis\n\n## Key terms\n\n| Term | Definition | Example |\n|---|---|---|\n| Glucose | sugar | — |\n\n- Light → glucose"
+    if "translate exam papers" in system:
+        items = json.loads(prompt.split("ITEMS:\n", 1)[1].split("\n\nReply with JSON")[0])
+        for it in items:
+            it["question"] = "（译）" + it["question"] + " 求解。"
+            if it.get("answer"):
+                it["answer"] = "（译）" + it["answer"] + " 答案。"
+        return json.dumps({"items": items}, ensure_ascii=False)
     if "knows the syllabus" in system:
         return json.dumps({"chapters": ["Algebra", "Geometry"]})
     if "sorting past exam questions" in system:
