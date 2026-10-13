@@ -464,14 +464,29 @@ def _question_text(q: dict) -> str:
     return "\n".join(lines)
 
 
+def pictures(client, items: list[dict], label: str = "question") -> tuple[list[bytes], str]:
+    """Pictures attached to items (key "picture": PNG bytes) and a note saying which is which,
+    for models that can see images. Otherwise nothing."""
+    if not getattr(client, "vision", False):
+        return [], ""
+    pairs = [(it["picture"], it.get("number") or it.get("id")) for it in items if it.get("picture")]
+    if not pairs:
+        return [], ""
+    note = ("\n\nPictures of the original printed questions are attached, in this order: "
+            + ", ".join(f"picture {i} = {label} {n}" for i, (_, n) in enumerate(pairs, 1))
+            + ". Use them for diagrams, graphs, tables and symbols the text may have lost.")
+    return [p for p, _ in pairs], note
+
+
 def solve_questions(client, ctx: dict, questions: list[dict], progress: Progress) -> None:
+    images, note = pictures(client, questions)
     prompt = prompts.SOLVE_PROMPT.format(
         level=ctx["level"], subject=ctx["subject"], notes=ctx["notes"][:6000],
-        questions="\n\n".join(_question_text(q) for q in questions))
+        questions="\n\n".join(_question_text(q) for q in questions)) + note
     for _ in range(2):
         system = prompts.SOLVE_SYSTEM + i18n.write_rule(ctx.get("language"), ctx.get("source_language"))
         reply = client.chat(system, prompt, json_mode=True, max_tokens=8192,
-                            should_stop=progress.cancelled)
+                            should_stop=progress.cancelled, **({"images": images} if images else {}))
         try:
             data = parse_json(reply)
         except ValueError:
@@ -505,13 +520,15 @@ def _check_item(q: dict) -> str:
 def verify_questions(client, ctx: dict, questions: list[dict], progress: Progress) -> list[dict]:
     """Second opinion on each question and answer. Fixes wrong answers in place, marks each
     question's "check" as "verified", "corrected" or "flagged", and returns the flagged ones."""
+    images, note = pictures(client, questions)
     prompt = prompts.CHECK_PROMPT.format(
         level=ctx["level"], subject=ctx["subject"], notes=ctx["notes"][:4000],
-        items="\n\n".join(_check_item(q) for q in questions))
+        items="\n\n".join(_check_item(q) for q in questions)) + note
     system = prompts.CHECK_SYSTEM + i18n.write_rule(ctx.get("language"), ctx.get("source_language"))
     for _ in range(2):
         reply = client.chat(system, prompt, json_mode=True, max_tokens=8192,
-                            should_stop=progress.cancelled, think=True)
+                            should_stop=progress.cancelled, think=True,
+                            **({"images": images} if images else {}))
         try:
             data = parse_json(reply)
         except ValueError:

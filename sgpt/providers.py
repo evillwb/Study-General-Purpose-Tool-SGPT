@@ -6,8 +6,10 @@ Every client has the same small interface used by the generator:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -137,6 +139,12 @@ def _error_message(body: str) -> str:
     return str(err)[:300]
 
 
+# Model names that accept images on OpenAI-compatible APIs.
+_VISION_MODELS = re.compile(
+    r"gpt-4o|gpt-4\.1|gpt-5|\bo[34]\b|o[34]-|gemini|vision|llava|llama-4|claude|pixtral|"
+    r"qwen[\d.]*-?vl|gemma-?3|grok-[\d]+v|mistral-(?:medium|small)-3", re.IGNORECASE)
+
+
 class OpenAICompatClient:
     def __init__(self, base_url: str, api_key: str, model: str, *, label: str = "API",
                  key_env: str | None = None, temperature: float = 0.7, seed: int | None = None,
@@ -185,14 +193,25 @@ class OpenAICompatClient:
         self._require_key()
         self.list_models()  # confirms the key and URL work; model errors surface on first call
 
+    @property
+    def vision(self) -> bool:
+        """Whether the model can read images (judged from its name)."""
+        return bool(_VISION_MODELS.search(self.model)) and "deepseek" not in self.base_url
+
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
              label: str = "", should_stop: Callable[[], bool] | None = None,
-             think: bool = False) -> str:
+             think: bool = False, images: list[bytes] | None = None) -> str:
         self._require_key()
+        content = prompt
+        if images and self.vision:
+            content = [{"type": "text", "text": prompt}] + [
+                {"type": "image_url",
+                 "image_url": {"url": "data:image/png;base64," + base64.b64encode(i).decode()}}
+                for i in images]
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": prompt}],
+                         {"role": "user", "content": content}],
             "stream": True,
             "temperature": self.temperature,
         }
@@ -306,10 +325,17 @@ class AnthropicClient:
     def check_model(self) -> None:
         self.list_models()
 
+    vision = True  # every current Claude model reads images
+
     def chat(self, system: str, prompt: str, json_mode: bool = False, max_tokens: int = 4096,
              label: str = "", should_stop: Callable[[], bool] | None = None,
-             think: bool = False) -> str:
+             think: bool = False, images: list[bytes] | None = None) -> str:
         client = self._sdk()
+        content = prompt
+        if images:
+            content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                     "data": base64.b64encode(i).decode()}}
+                       for i in images] + [{"type": "text", "text": prompt}]
         if json_mode:
             system += "\nRespond with a single JSON object and nothing else."
         params = {
@@ -317,7 +343,7 @@ class AnthropicClient:
             # Thinking counts toward max_tokens on current models, so leave plenty of room.
             "max_tokens": 64000,
             "system": system,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": [{"role": "user", "content": content}],
             "output_config": {"effort": self.effort},
         }
 

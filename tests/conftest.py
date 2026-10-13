@@ -131,10 +131,18 @@ def fake_reply(system: str, prompt: str) -> str:
     return "OK"
 
 
+def _text_of(content) -> str:
+    """The text of a message whose content may be a list of text and image parts."""
+    if isinstance(content, list):
+        return "\n".join(p.get("text", "") for p in content if p.get("type") == "text")
+    return content
+
+
 class _FakeAI(BaseHTTPRequestHandler):
     """Speaks just enough of the Ollama, OpenAI and Anthropic APIs for the tests."""
     requests: list = []
     reject_temperature = False
+    vision = False  # whether the fake Ollama model says it can read images
 
     def log_message(self, *args):
         pass
@@ -163,6 +171,8 @@ class _FakeAI(BaseHTTPRequestHandler):
 
     def do_POST(self):
         payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path == "/api/show":
+            return self._send({"capabilities": ["completion"] + (["vision"] if type(self).vision else [])})
         type(self).requests.append({"path": self.path, "headers": dict(self.headers), **payload})
         if self.path == "/api/chat":  # Ollama
             msgs = payload["messages"]
@@ -174,13 +184,13 @@ class _FakeAI(BaseHTTPRequestHandler):
             if type(self).reject_temperature and "temperature" in payload:
                 return self._send({"error": {"message": "Unsupported parameter: 'temperature'"}}, 400)
             msgs = payload["messages"]
-            reply = fake_reply(msgs[0]["content"], msgs[1]["content"])
+            reply = fake_reply(msgs[0]["content"], _text_of(msgs[1]["content"]))
             events = [{"choices": [{"delta": {"content": reply[i:i + 20]}}]}
                       for i in range(0, len(reply), 20)]
             body = "".join(f"data: {json.dumps(e)}\n\n" for e in events) + "data: [DONE]\n\n"
             return self._send(body.encode(), ctype="text/event-stream")
         if self.path.startswith("/v1/messages"):  # Anthropic
-            reply = fake_reply(payload.get("system", ""), payload["messages"][0]["content"])
+            reply = fake_reply(payload.get("system", ""), _text_of(payload["messages"][0]["content"]))
             events = [
                 ("message_start", {"type": "message_start", "message": {
                     "id": "msg_1", "type": "message", "role": "assistant", "model": payload["model"],
@@ -206,6 +216,7 @@ class _FakeAI(BaseHTTPRequestHandler):
 def fake_ai():
     _FakeAI.requests = []
     _FakeAI.reject_temperature = False
+    _FakeAI.vision = False
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAI)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}", _FakeAI

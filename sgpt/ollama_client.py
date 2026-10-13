@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import sys
@@ -53,6 +54,18 @@ class OllamaClient:
         self.seed = seed
         self.verbose = verbose
         self.timeout = timeout
+        self._vision: bool | None = None
+
+    @property
+    def vision(self) -> bool:
+        """Whether the model can read images (e.g. qwen2.5vl, gemma3, llava; not qwen3:4b)."""
+        if self._vision is None:
+            try:
+                with self._request("/api/show", {"model": self.model}) as resp:
+                    self._vision = "vision" in (json.load(resp).get("capabilities") or [])
+            except (OllamaError, ValueError, OSError):
+                self._vision = False
+        return self._vision
 
     def _request(self, path: str, payload: dict | None = None):
         data = json.dumps(payload).encode() if payload is not None else None
@@ -83,7 +96,8 @@ class OllamaClient:
 
     def chat(self, system: str, prompt: str, json_mode: bool = False,
              max_tokens: int = 4096, label: str = "",
-             should_stop: Callable[[], bool] | None = None, think: bool = False) -> str:
+             should_stop: Callable[[], bool] | None = None, think: bool = False,
+             images: list[bytes] | None = None) -> str:
         options = {"temperature": self.temperature, "num_ctx": self.num_ctx,
                    "num_predict": max_tokens * 3 if think else max_tokens}
         if self.seed is not None:
@@ -91,7 +105,9 @@ class OllamaClient:
         payload = {
             "model": self.model,
             "messages": [{"role": "system", "content": system},
-                         {"role": "user", "content": prompt}],
+                         {"role": "user", "content": prompt,
+                          **({"images": [base64.b64encode(i).decode() for i in images]}
+                             if images and self.vision else {})}],
             "stream": True,
             # qwen3: skip the hidden reasoning phase for speed, except when checking answers
             "think": think,

@@ -105,13 +105,37 @@ def markdown_to_html(text: str, title: str = "") -> str:
             f"</title><style>{PAGE_CSS}</style></head><body>{body}</body></html>")
 
 
-def html_to_pdf(page_html: str, out: Path, header: str = "") -> Path:
+_IMG = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>', re.IGNORECASE)
+_MD_IMG = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)\)$")
+MAX_IMAGE_WIDTH = 480  # points: the A4 text width used below
+
+
+def _sized_images(html: str, images_dir: Path) -> str:
+    """Give each <img> its print size (pictures are rendered at 2x), at most the text width."""
+    import pymupdf
+
+    def size(match):
+        try:
+            with pymupdf.open(images_dir / match.group(1)) as img:
+                width = img[0].rect.width
+        except (RuntimeError, OSError, IndexError):
+            return match.group(0)
+        return f'<img src="{match.group(1)}" width="{min(width / 2, MAX_IMAGE_WIDTH):.0f}">'
+    return _IMG.sub(size, html)
+
+
+def html_to_pdf(page_html: str, out: Path, header: str = "", images_dir: Path | None = None) -> Path:
     """Lay out HTML on A4 pages; with a header, every page after the first gets a running
-    header and all pages a centred page number, like a printed handout."""
+    header and all pages a centred page number, like a printed handout. Images are read
+    from images_dir."""
     import pymupdf
 
     body = re.search(r"<body[^>]*>(.*)</body>", page_html, re.DOTALL | re.IGNORECASE)
-    story = pymupdf.Story(html=body.group(1) if body else page_html, user_css=PAGE_CSS)
+    html = body.group(1) if body else page_html
+    if images_dir:
+        html = _sized_images(html, images_dir)
+    story = pymupdf.Story(html=html, user_css=PAGE_CSS,
+                          archive=pymupdf.Archive(str(images_dir)) if images_dir else None)
     writer = pymupdf.DocumentWriter(str(out))
     page = pymupdf.paper_rect("a4")
     more = True
@@ -156,9 +180,11 @@ def _add_runs(paragraph, text: str) -> None:
             paragraph.add_run(piece)
 
 
-def markdown_to_docx(text: str, out: Path, title: str = "") -> Path:
-    """Write Markdown (headings, lists, quotes, tables, bold/italic) as a Word document."""
+def markdown_to_docx(text: str, out: Path, title: str = "", images_dir: Path | None = None) -> Path:
+    """Write Markdown (headings, lists, quotes, tables, bold/italic, pictures on their own
+    line) as a Word document."""
     import docx
+    from docx.shared import Pt
 
     doc = docx.Document()
     if title:
@@ -182,6 +208,16 @@ def markdown_to_docx(text: str, out: Path, title: str = "") -> Path:
             for r, row in enumerate(rows):
                 for c, cell in enumerate(row):
                     _add_runs(table.cell(r, c).paragraphs[0], cell)
+            continue
+        picture = _MD_IMG.match(stripped)
+        if picture and images_dir and (images_dir / picture.group(2)).is_file():
+            import pymupdf
+
+            path = images_dir / picture.group(2)
+            with pymupdf.open(path) as img:
+                width = img[0].rect.width / 2
+            doc.add_picture(str(path), width=Pt(min(width, 450)))
+            i += 1
             continue
         heading = re.match(r"^(#{1,6})\s+(.*)", stripped)
         if heading:
@@ -426,8 +462,10 @@ def _pdf_has_text(path: Path) -> bool:
         return sum(len(p.get_text().strip()) for p in doc) > 50 * max(len(doc), 1) * 0.2
 
 
-def export_markdown(text: str, fmt: str, title: str = "") -> tuple[bytes, str]:
-    """Markdown -> (file bytes, media type) for downloads."""
+def export_markdown(text: str, fmt: str, title: str = "",
+                    images_dir: Path | None = None) -> tuple[bytes, str]:
+    """Markdown -> (file bytes, media type) for downloads. Pictures (![..](name)) are read
+    from images_dir for PDF and Word."""
     if fmt == "md":
         return text.encode("utf-8"), "text/markdown"
     if fmt == "txt":
@@ -438,10 +476,10 @@ def export_markdown(text: str, fmt: str, title: str = "") -> tuple[bytes, str]:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / f"export.{fmt}"
         if fmt == "pdf":
-            html_to_pdf(markdown_to_html(text, title), out, header=title)
+            html_to_pdf(markdown_to_html(text, title), out, header=title, images_dir=images_dir)
             return out.read_bytes(), "application/pdf"
         if fmt == "docx":
-            markdown_to_docx(text, out, title)
+            markdown_to_docx(text, out, title, images_dir)
             return out.read_bytes(), ("application/vnd.openxmlformats-officedocument."
                                       "wordprocessingml.document")
     raise ConvertError(f"Unknown export format: {fmt}")

@@ -604,3 +604,7 @@ output { font-weight: 400; color: var(--text); }
   .sheet h2, .sheet h3 { break-after: avoid; }
 }
 .file-icon.png, .file-icon.jpg, .file-icon.jpeg, .file-icon.webp { background: #dcfce7; color: #15803d; }
+
+/* Question bank: picture of the printed question */
+.qpicture { display: block; max-width: 100%; height: auto; margin: 4px 0 2px; border-radius: 6px;
+  background: #fff; border: 1px solid var(--border); }

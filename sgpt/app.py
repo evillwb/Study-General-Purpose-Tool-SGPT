@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import threading
 import time
 import uuid
@@ -318,6 +319,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
     # --- Question bank (all past-year questions, by chapter and difficulty) -------------
     bank_file = library_dir / ".question_bank.json"
+    bank_images = library_dir / ".bank_images"  # a picture of each question, cut from its page
 
     def cached_bank(papers) -> dict | None:
         if not papers:
@@ -352,8 +354,10 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             if not papers:
                 raise RuntimeError("No past papers selected. Add PDFs and mark them as past papers.")
             analysis = (cached_analysis(papers) or {}).get("merged") or {}
+            shutil.rmtree(bank_images, ignore_errors=True)
             bank = qbank.build_bank(c, papers, subject=s.get("subject") or analysis.get("subject") or "",
-                                    topics=analysis.get("topics") or [], progress=job)
+                                    topics=analysis.get("topics") or [], progress=job,
+                                    image_dir=bank_images)
             save_bank(papers, bank)
             job.result = bank
 
@@ -373,7 +377,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             bank = cached_bank(papers)
             if not bank:
                 raise RuntimeError("Build the question bank first.")
-            qbank.solve_bank_questions(c, bank, ids, s.get("language") or "en", progress=job)
+            qbank.solve_bank_questions(c, bank, ids, s.get("language") or "en", progress=job,
+                                       image_dir=bank_images)
             save_bank(papers, bank)
             job.result = public_bank(bank)
             job.step(1, 1, "Done")
@@ -387,9 +392,17 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             abort(404, "Build the question bank first")
         view = request.args.get("view", "chapters")
         per_chapter = max(1, min(int(request.args.get("n") or 10), 100))
-        text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter)
+        fmt = request.args.get("format", "md")
+        text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter,
+                                 pictures=fmt in ("pdf", "docx"))
         title = f"Hardest {per_chapter} questions per chapter" if view == "hardest" else "Questions by chapter"
-        return download(text, request.args.get("format", "md"), title)
+        return download(text, fmt, title, images_dir=bank_images)
+
+    @app.get("/api/bank/image/<name>")
+    def bank_image(name):
+        if not re.fullmatch(r"[A-Za-z0-9_-]+\.png", name):
+            abort(404)
+        return send_from_directory(bank_images, name, max_age=3600)
 
     # --- Study tools (notes, flashcards, vocabulary, quiz, grammar) ---------------------
     study_dir = output_dir / "study"
@@ -592,10 +605,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         return jsonify(job.as_dict() if job else None)
 
     # --- Downloads and the file converter --------------------------------------------
-    def download(markdown_text: str, fmt: str, title: str, suffix: str = "") -> Response:
+    def download(markdown_text: str, fmt: str, title: str, suffix: str = "",
+                 images_dir: Path | None = None) -> Response:
         if fmt not in ("md", "txt", "html", "pdf", "docx"):
             abort(400, "Unknown format")
-        data, mimetype = convert.export_markdown(markdown_text, fmt, title)
+        data, mimetype = convert.export_markdown(markdown_text, fmt, title, images_dir)
         slug = re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" ._")[:60] or "export"
         return Response(data, mimetype=mimetype, headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(slug + suffix)}.{fmt}"})

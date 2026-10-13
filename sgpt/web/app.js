@@ -1238,6 +1238,7 @@ function renderBank() {
   $("#bank-answers").disabled = bankState.busy;
   $("#bank-n").hidden = bankState.tab !== "hardest";
   $("#bank-sort").hidden = bankState.tab === "hardest";
+  $("#bank-view").hidden = !bankState.bank.questions.some((q) => q.image);
   $$("[data-bank-tab]").forEach((t) => t.classList.toggle("active", t.dataset.bankTab === bankState.tab));
   const chapterSelect = $("#bank-chapter");
   if (chapterSelect.options.length !== b.chapters.length + 1) {
@@ -1271,14 +1272,16 @@ function bankCard(q, rank) {
     el("div", { class: "qhead" },
       rank && el("span", { class: "rank" }, `#${rank}`),
       el("span", { class: "qnum" }, `Q${q.number}`),
-      el("span", { class: "tag" }, q.paper),
+      el("span", { class: "tag" }, q.paper + (q.section ? ` · ${q.section}` : "") + (q.page ? ` · p.${q.page}` : "")),
       el("span", { class: "tag" }, typeLabel(q.type)),
       q.topic && el("span", { class: "tag" }, q.topic),
       q.check && el("span", { class: `tag ${q.check}` }, { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
       el("span", { class: "qmarks" },
         el("span", { class: "diff", title: "Difficulty out of 10" }, el("span", { class: "diff-bar" }, el("span", { style: `width:${q.difficulty * 10}%` })), `${q.difficulty}/10`),
         q.marks ? ` · ${plural(q.marks, "mark")}` : "")),
-    el("div", { class: "qtext", html: fmt(q.text) }),
+    q.image && !bankState.textOnly
+      ? el("img", { class: "qpicture", src: `/api/bank/image/${q.image}`, alt: q.text.slice(0, 200), loading: "lazy" })
+      : el("div", { class: "qtext", html: fmt(q.text) }),
     q.reason && el("div", { class: "why" }, (rank ? "Why it's hard: " : "") + q.reason),
     open && q.answer && answerBlock({ ...q, accept: q.accept || "", marking_points: q.marking_points || [] }),
     q.answer && el("div", { class: "qfoot" }, el("button", { class: "btn ghost small", type: "button",
@@ -1451,6 +1454,13 @@ function wire() {
   });
   $$("[data-bank-tab]").forEach((t) => t.addEventListener("click", () => { bankState.tab = t.dataset.bankTab; renderBank(); }));
   ["bank-search", "bank-sort", "bank-n"].forEach((id) => $("#" + id).addEventListener("input", renderBank));
+  $("#bank-view").value = store.get("bankView", "pictures");
+  bankState.textOnly = $("#bank-view").value === "text";
+  $("#bank-view").addEventListener("input", (e) => {
+    bankState.textOnly = e.target.value === "text";
+    store.set("bankView", e.target.value);
+    renderBank();
+  });
   $("#bank-chapter").addEventListener("change", (e) => { bankState.chapter = e.target.value; renderBank(); });
   const bankMenu = $("#bank-export");
   $("#bank-export-btn").addEventListener("click", (e) => { e.stopPropagation(); bankMenu.hidden = !bankMenu.hidden; });

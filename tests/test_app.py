@@ -168,3 +168,38 @@ def test_question_bank(sample_pdf, fake_ai, tmp_path):
     assert job["state"] == "done", job
     q3 = next(q for q in job["result"]["questions"] if q["id"] == "p1-q3")
     assert q3["answer"] and q3["check"] in ("verified", "corrected")
+
+
+def test_question_bank_pictures_reach_a_vision_model(sample_pdf, fake_ai, tmp_path):
+    host, server = fake_ai
+    server.vision = True
+    c = create_app(sample_pdf, tmp_path / "out", host).test_client()
+    job = _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])
+    assert job["state"] == "done", job
+    questions = c.get("/api/bank").get_json()["bank"]["questions"]
+    assert all(q.get("image") for q in questions), questions
+    r = c.get(f"/api/bank/image/{questions[0]['image']}")
+    assert r.status_code == 200 and r.data[:4] == b"\x89PNG"
+    assert c.get("/api/bank/image/..%2Fsecret.png").status_code == 404
+
+    sorting = [r for r in server.requests if "sorting past exam questions" in r["messages"][0]["content"]]
+    assert sorting and len(sorting[0]["messages"][1]["images"]) == len(questions)
+    assert "picture 1 = the question with id" in sorting[0]["messages"][1]["content"]
+
+    job = _wait(c, c.post("/api/bank/solve", json={"ids": [questions[1]["id"]]}).get_json()["id"])
+    assert job["state"] == "done", job
+    solving = [r for r in server.requests if r["messages"][0]["content"].startswith("You are a senior examiner")]
+    assert solving and len(solving[-1]["messages"][1]["images"]) == 1
+
+    import io
+
+    import docx
+    data = c.get("/api/bank/export?view=chapters&format=docx").data
+    assert len(docx.Document(io.BytesIO(data)).inline_shapes) == len(questions)
+
+
+def test_text_only_model_gets_no_pictures(sample_pdf, fake_ai, tmp_path):
+    host, server = fake_ai
+    c = create_app(sample_pdf, tmp_path / "out", host).test_client()
+    assert _wait(c, c.post("/api/bank/build", json={}).get_json()["id"])["state"] == "done"
+    assert not any("images" in m for r in server.requests for m in r["messages"])
