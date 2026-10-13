@@ -143,6 +143,7 @@ class _FakeAI(BaseHTTPRequestHandler):
     requests: list = []
     reject_temperature = False
     vision = False  # whether the fake Ollama model says it can read images
+    busy = 0  # answer this many chat requests with "503 high demand" first
 
     def log_message(self, *args):
         pass
@@ -181,6 +182,10 @@ class _FakeAI(BaseHTTPRequestHandler):
                      for i in range(0, len(reply), 20)] + [{"message": {"content": ""}, "done": True}]
             return self._send("\n".join(json.dumps(x) for x in lines).encode())
         if self.path == "/v1/chat/completions":  # OpenAI-compatible
+            if type(self).busy > 0:
+                type(self).busy -= 1
+                return self._send({"error": {"code": 503, "status": "UNAVAILABLE", "message":
+                                             "This model is currently experiencing high demand."}}, 503)
             if type(self).reject_temperature and "temperature" in payload:
                 return self._send({"error": {"message": "Unsupported parameter: 'temperature'"}}, 400)
             msgs = payload["messages"]
@@ -217,6 +222,7 @@ def fake_ai():
     _FakeAI.requests = []
     _FakeAI.reject_temperature = False
     _FakeAI.vision = False
+    _FakeAI.busy = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), _FakeAI)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     yield f"http://127.0.0.1:{server.server_port}", _FakeAI

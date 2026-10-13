@@ -28,8 +28,9 @@ from . import bank as qbank
 from . import convert, ocr, study
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
-from .providers import (PROVIDERS, SEARCH_ENGINES, make_client, mask_key, resolve_base_url,
-                        resolve_key, save_provider_config, save_search_settings, search_settings)
+from .providers import (PROVIDERS, SEARCH_ENGINES, config_path, make_client, mask_key,
+                        resolve_base_url, resolve_key, save_provider_config, save_search_settings,
+                        search_settings)
 from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_files,
                       library_meta, load_file, load_library, save_library_meta)
 
@@ -86,11 +87,21 @@ class Job(Progress):
     def cancel(self) -> None:
         self._cancel.set()
 
-    def as_dict(self) -> dict:
-        return {"id": self.id, "kind": self.kind, "state": self.state, "done": self.done,
-                "total": self.total, "message": self.message, "log": self.log,
-                "error": self.error, "exam_id": self.exam_id, "result": self.result,
-                "elapsed": round(time.time() - self.started)}
+    def eta(self) -> int | None:
+        """Seconds left, judged from the time the finished steps took (None until known)."""
+        elapsed = time.time() - self.started
+        if self.state != "running" or self.done <= 0 or self.total <= self.done or elapsed < 3:
+            return None
+        return round(elapsed / self.done * (self.total - self.done))
+
+    def as_dict(self, full: bool = True) -> dict:
+        data = {"id": self.id, "kind": self.kind, "state": self.state, "done": self.done,
+                "total": self.total, "message": self.message, "error": self.error,
+                "exam_id": self.exam_id, "elapsed": round(time.time() - self.started),
+                "eta": self.eta()}
+        if full:
+            data.update(log=self.log, result=self.result)
+        return data
 
 
 def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = None) -> Flask:
@@ -604,6 +615,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         job = running_job()
         return jsonify(job.as_dict() if job else None)
 
+    @app.get("/api/jobs/running")
+    def running_jobs():
+        """Everything still running, for the Stop buttons on every page."""
+        return jsonify([j.as_dict(full=False) for j in jobs.values() if j.state == "running"])
+
     # --- Downloads and the file converter --------------------------------------------
     def download(markdown_text: str, fmt: str, title: str, suffix: str = "",
                  images_dir: Path | None = None) -> Response:
@@ -665,8 +681,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
                             results.append(convert.convert(src, target, out_dir))
                     except convert.ConvertError as exc:
                         job.warn(str(exc))
-            job.result = [{"name": r.name, "size": r.stat().st_size,
-                           "url": f"/api/converted/{job.id}/{quote(r.name)}"} for r in results]
+            job.result = [converted_info(r) for r in results]
+            shutil.rmtree(in_dir, ignore_errors=True)  # the uploaded originals aren't needed now
             job.step(1, 1, "Done")
             if not results:
                 raise RuntimeError("Nothing could be converted. " + " ".join(
@@ -674,14 +690,77 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
         return start_job(job, work)
 
-    @app.get("/api/converted/<job_id>/<path:name>")
-    def converted_file(job_id, name):
+    def converted_info(path: Path) -> dict:
+        job_id = path.parent.parent.name
+        return {"job": job_id, "name": path.name, "size": path.stat().st_size,
+                "created": path.stat().st_mtime, "url": f"/api/converted/{job_id}/{quote(path.name)}"}
+
+    def converted_path(job_id: str, name: str) -> Path:
         if not re.match(r"^[a-f0-9]{12}$", job_id):
             abort(404, "Not found")
         path = converted_dir / job_id / "out" / Path(name).name
         if not path.is_file():
             abort(404, "Not found")
+        return path
+
+    def busy_folders() -> set[str]:
+        return {j.id for j in jobs.values() if j.kind == "convert" and j.state == "running"}
+
+    @app.get("/api/converted")
+    def list_converted():
+        files = [p for p in converted_dir.glob("*/out/*") if p.is_file()]
+        files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        return jsonify([converted_info(p) for p in files])
+
+    @app.get("/api/converted/<job_id>/<path:name>")
+    def converted_file(job_id, name):
+        path = converted_path(job_id, name)
         return send_file(path, as_attachment=True, download_name=path.name)
+
+    @app.delete("/api/converted/<job_id>/<path:name>")
+    def delete_converted(job_id, name):
+        path = converted_path(job_id, name)
+        path.unlink()
+        if not any(path.parent.iterdir()):
+            shutil.rmtree(path.parent.parent, ignore_errors=True)
+        return jsonify(ok=True)
+
+    @app.delete("/api/converted")
+    def delete_all_converted():
+        busy = busy_folders()
+        removed = 0
+        for folder in converted_dir.glob("*"):
+            if folder.is_dir() and folder.name not in busy:
+                removed += sum(1 for p in folder.glob("out/*") if p.is_file())
+                shutil.rmtree(folder, ignore_errors=True)
+        return jsonify(ok=True, removed=removed)
+
+    @app.post("/api/data/delete-all")
+    def delete_all_data():
+        """Delete every file SGPT made or was given: uploads, exams, study sets, converted
+        files, question bank, analyses and caches. Optionally also settings and API keys."""
+        s = request.get_json(force=True) or {}
+        if s.get("confirm") != "DELETE":
+            abort(400, 'Type DELETE to confirm')
+        for job in jobs.values():
+            if job.state == "running":
+                job.cancel()
+        deadline = time.time() + 10
+        while any(j.state == "running" for j in jobs.values()) and time.time() < deadline:
+            time.sleep(0.2)
+        for folder in (library_dir, output_dir):
+            for item in folder.iterdir():
+                if item.name == ".gitkeep":
+                    continue
+                if item.is_dir():
+                    shutil.rmtree(item, ignore_errors=True)
+                else:
+                    item.unlink(missing_ok=True)
+        (output_dir / "study").mkdir(exist_ok=True)
+        if s.get("settings"):
+            config_path().unlink(missing_ok=True)
+        jobs.clear()
+        return jsonify(ok=True)
 
     # --- OCR only ------------------------------------------------------------------------
     @app.post("/api/ocr")

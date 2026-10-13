@@ -10,7 +10,7 @@ from datetime import datetime
 from . import i18n, prompts
 from .generator import (QUESTION_TYPES, Progress, _as_int, _text, pictures, solve_questions,
                         verify_questions)
-from .ollama_client import parse_json
+from .ollama_client import Cancelled, parse_json
 from .sources import Source
 
 CLASSIFY_BATCH = 8
@@ -86,6 +86,8 @@ def build_bank(client, papers: list[Source], *, subject: str = "", topics: list[
         from .snapshots import snapshot_questions
 
         for i, paper in enumerate(papers, 1):
+            if progress.cancelled():
+                raise Cancelled()
             progress.step(done, total, f"Taking pictures of the questions in {paper.title}")
             mine = [q for q in questions if q["paper"] == paper.title]
             if paper.paper and paper.paper.path.suffix.lower() == ".pdf":

@@ -86,3 +86,64 @@ def test_convert_and_export_endpoints(tmp_path):
     r = c.post("/api/export", json={"markdown": "# Hi\n\nText", "format": "pdf", "title": "OCR 结果"})
     assert r.status_code == 200 and r.data[:4] == b"%PDF"
     assert "filename*=UTF-8''OCR%20%E7%BB%93%E6%9E%9C.pdf" in r.headers["Content-Disposition"]
+
+
+def _convert(c, name, data, target="docx"):
+    job = c.post("/api/convert", data={"target": target, "files": [(io.BytesIO(data), name)]}).get_json()
+    deadline = time.time() + 30
+    while job["state"] == "running" and time.time() < deadline:
+        time.sleep(0.1)
+        job = c.get(f"/api/jobs/{job['id']}").get_json()
+    assert job["state"] == "done", job
+    return job["result"][0]
+
+
+def test_converted_files_can_be_listed_and_deleted(tmp_path):
+    c = create_app(tmp_path / "lib", tmp_path / "out").test_client()
+    first = _convert(c, "a.md", NOTES.encode())
+    second = _convert(c, "b.md", NOTES.encode())
+    listed = c.get("/api/converted").get_json()
+    assert [f["name"] for f in listed] == ["b.docx", "a.docx"]  # newest first
+    assert not list((tmp_path / "out" / "converted").glob("*/in"))  # uploads are removed
+
+    assert c.delete(first["url"]).get_json()["ok"]
+    assert [f["name"] for f in c.get("/api/converted").get_json()] == ["b.docx"]
+    assert c.get(first["url"]).status_code == 404
+    _convert(c, "c.md", NOTES.encode())
+    assert c.delete("/api/converted").get_json()["removed"] == 2
+    assert c.get("/api/converted").get_json() == [] and c.get(second["url"]).status_code == 404
+
+
+def test_delete_all_data(tmp_path, monkeypatch):
+    from sgpt.providers import config_path, save_provider_config
+
+    lib, out = tmp_path / "lib", tmp_path / "out"
+    c = create_app(lib, out).test_client()
+    _convert(c, "a.md", NOTES.encode())
+    (lib / "paper.pdf").write_bytes(b"%PDF-1.4")
+    (lib / ".question_bank.json").write_text("{}")
+    (out / "exam1.json").write_text("{}")
+    save_provider_config("openai", api_key="sk-test")
+    assert c.post("/api/data/delete-all", json={"confirm": "yes"}).status_code == 400
+    assert (lib / "paper.pdf").exists()
+
+    assert c.post("/api/data/delete-all", json={"confirm": "DELETE"}).get_json()["ok"]
+    assert list(lib.iterdir()) == [] and [p.name for p in out.iterdir()] == ["study"]
+    assert config_path().exists()  # settings are kept unless asked
+    assert c.post("/api/data/delete-all", json={"confirm": "DELETE", "settings": True}).get_json()["ok"]
+    assert not config_path().exists()
+    assert c.get("/api/exams").status_code == 200
+
+
+def test_running_jobs_report_time_left(tmp_path):
+    from sgpt.app import Job
+
+    job = Job("convert")
+    job.started -= 20
+    assert job.eta() is None  # nothing finished yet
+    job.step(1, 5, "one of five")
+    assert job.eta() == 80  # 20 s per step, 4 steps left
+    job.state = "done"
+    assert job.eta() is None
+    c = create_app(tmp_path / "lib", tmp_path / "out").test_client()
+    assert c.get("/api/jobs/running").get_json() == []

@@ -97,11 +97,14 @@ to get the most faithful Word → PDF layout, install the free
 | "Ollama is not running" | Open the Ollama app, or run `ollama serve`. |
 | "… is not installed. Run: ollama pull …" | Run that command, or choose another model. |
 | "rejected the API key" | Paste the key again in the settings, and check you have credit with that provider. |
-| "rate limit or quota reached" | Wait a minute, or check your plan with the provider. |
+| "rate limit or quota reached" | SGPT already waited and tried 5 times. Wait a few minutes, or check your plan with the provider. |
+| "busy or having problems (error 503)", e.g. Gemini "high demand" | The provider is overloaded. SGPT waits and tries again by itself (after 5, 15, 30 and 60 seconds); if it still fails, try later or choose another model (a "lite" model is often less busy). |
 | A scanned PDF says "Install OCR" | `pip install rapidocr onnxruntime` (inside `.venv`). |
 | Web search finds nothing | Your network may block DuckDuckGo: add a Brave or Tavily key, or add your own sources. |
 | Questions are wrong or repetitive | Use a bigger model, add better sources, lower *Creativity*, or add instructions under *More options*. |
 | Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
+| Something is taking too long | Every job has a **Stop** button and shows the time left. Jobs running on another page appear in the bottom-right corner, with Stop. |
+| Start again from nothing | **Settings → Your data → Delete all data** removes uploads, exams, study sets, converted files, the question bank and caches (and, if ticked, your settings and API keys). |
 | Port already in use | `python -m sgpt.app --port 8800` |
 | "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
 | "The system cannot find the path specified" from `start-sgpt.bat` | Extract the ZIP first (right-click → Extract All) and run the launcher from the extracted folder. If it still happens, delete the `.venv` folder and run it again, or use SGPT.exe. |

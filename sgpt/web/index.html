@@ -333,7 +333,7 @@
     </div>
     <p id="bank-note" class="note" hidden></p>
     <div id="bank-progress" class="panel ocr-progress" hidden>
-      <div class="progress-meta"><span id="bank-msg"></span><span id="bank-steps"></span></div>
+      <div class="progress-meta"><span id="bank-msg"></span><span class="meta-right"><span id="bank-steps"></span><button id="bank-cancel" class="btn small" type="button">Stop</button></span></div>
       <div class="bar"><div id="bank-fill"></div></div>
     </div>
     <div id="bank-body" hidden>
@@ -390,12 +390,15 @@
       <p id="conv-hint" class="hint"></p>
       <button id="conv-go" class="btn primary big" type="button" disabled>Convert</button>
       <div id="conv-progress" class="ocr-progress" hidden>
-        <div class="progress-meta"><span id="conv-msg"></span></div>
+        <div class="progress-meta"><span id="conv-msg"></span><button id="conv-cancel" class="btn small" type="button">Stop</button></div>
         <div class="bar"><div id="conv-fill"></div></div>
       </div>
     </section>
     <section id="conv-results" class="panel" hidden>
-      <h2 class="panel-title">Ready to download</h2>
+      <div class="panel-head">
+        <h2 class="panel-title">Converted files</h2>
+        <button id="conv-clear" class="btn small danger" type="button">Delete all</button>
+      </div>
       <ul id="conv-list" class="file-list"></ul>
     </section>
   </main>
@@ -459,10 +462,17 @@
         </label>
       </div>
       <p class="hint">Keys are stored only on this computer, in <code>~/.sgpt/config.json</code>.</p>
+
+      <h3>Your data</h3>
+      <p class="hint">Deletes everything SGPT keeps: uploaded files, exams, study sets, converted
+        files, the question bank, analyses and caches. This can't be undone.</p>
+      <label class="check"><input id="wipe-settings" type="checkbox"> Also delete my AI settings and API keys</label>
+      <button id="wipe-all" class="btn danger" type="button">Delete all data…</button>
       <div class="settings-foot"><button class="btn primary" value="close">Done</button></div>
     </form>
   </dialog>
 
+  <div id="job-dock" class="job-dock" aria-live="polite"></div>
   <div id="toast" class="toast" role="status" hidden></div>
   <script src="/static/app.js"></script>
 </body>

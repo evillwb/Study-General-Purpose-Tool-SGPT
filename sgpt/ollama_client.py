@@ -6,6 +6,7 @@ import base64
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 from typing import Callable
@@ -30,6 +31,44 @@ def strip_thinking(text: str) -> str:
     if "<think>" in text:
         text = text.split("<think>", 1)[0]
     return text.strip()
+
+
+# When a provider is busy or overloaded (e.g. Gemini "503: high demand") or rate-limited,
+# wait this many seconds before each new try.
+RETRY_WAITS = (5, 15, 30, 60)
+BUSY_CODES = {429, 500, 502, 503, 504, 529}
+
+
+def wait_to_retry(label: str, attempt: int, should_stop: Callable[[], bool] | None) -> bool:
+    """Wait before retry number attempt+1; False once every retry is used up.
+
+    Stop still works while waiting. When should_stop belongs to a running job (it is the
+    job's bound cancelled() method), the wait is shown in its progress.
+    """
+    if attempt >= len(RETRY_WAITS):
+        return False
+    wait = RETRY_WAITS[attempt]
+    job = getattr(should_stop, "__self__", None)
+    if hasattr(job, "note"):
+        job.note(f"{label} is busy right now. Trying again in {wait}s "
+                 f"(try {attempt + 2} of {len(RETRY_WAITS) + 1})…")
+    end = time.time() + wait
+    while time.time() < end:
+        if should_stop and should_stop():
+            raise Cancelled()
+        time.sleep(min(0.25, max(end - time.time(), 0)))
+    return True
+
+
+def busy_message(label: str, code: int, detail: str) -> str:
+    if code == 429:
+        return (f"{label} rate limit or quota reached, even after waiting and trying "
+                f"{len(RETRY_WAITS) + 1} times: {detail} Wait a few minutes, check your plan's "
+                "limits, or choose another model or provider in the settings.")
+    return (f"{label} is busy or having problems (error {code}), even after trying "
+            f"{len(RETRY_WAITS) + 1} times over about two minutes: {detail} Try again later, "
+            "or choose another model or provider in the settings (for example a \"lite\" or "
+            "older model, which is often less busy).")
 
 
 def parse_json(text: str) -> dict:

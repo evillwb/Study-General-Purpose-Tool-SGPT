@@ -506,6 +506,13 @@ function followJob(job) {
 }
 
 const formatTime = (s) => (s >= 60 ? `${Math.floor(s / 60)} min ${s % 60}s` : `${s}s`);
+// "2 min 10s · about 4 min left": time so far and the estimate from the finished steps.
+function timeText(job) {
+  if (!job.eta) return formatTime(job.elapsed);
+  const left = job.eta < 60 ? "under a minute" : job.eta < 3600 ? `about ${Math.round(job.eta / 60)} min`
+    : `about ${Math.floor(job.eta / 3600)} h ${Math.round((job.eta % 3600) / 60)} min`;
+  return `${formatTime(job.elapsed)} · ${left} left`;
+}
 
 function renderJob(job) {
   if (job.kind === "generate" || job.kind === "analyse") {
@@ -513,7 +520,7 @@ function renderJob(job) {
     $("#progress").classList.toggle("running", job.state === "running");
     $("#bar-fill").style.width = `${Math.max(pct, 3)}%`;
     $("#progress-steps").textContent = job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total}` : "";
-    $("#elapsed").textContent = formatTime(job.elapsed);
+    $("#elapsed").textContent = timeText(job);
     $("#progress-title").textContent = { running: job.kind === "analyse" ? "Analysing your past papers…" : "Writing your exam…", error: "Something went wrong",
       cancelled: "Stopped", done: "Finished" }[job.state];
     $("#progress-msg").textContent = job.state === "error" ? job.error : job.message;
@@ -730,6 +737,8 @@ function showView(view) {
   if (view === "bank") loadBank();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "library") loadExams();
+  if (view === "convert") loadConverted();
+  pollDock();
 }
 
 // ---------- OCR only -------------------------------------------------------------------
@@ -755,7 +764,7 @@ async function startOcr(files) {
 }
 
 function renderOcrJob(job) {
-  $("#ocr-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#ocr-msg").textContent = job.state === "error" ? job.error : `${job.message} · ${timeText(job)}`;
   $("#ocr-fill").style.width = `${Math.max(3, Math.round(((job.done + (job.state === "done" ? 1 : 0)) / Math.max(job.total, 1)) * 100))}%`;
   $("#ocr-cancel").hidden = job.state !== "running";
   if (job.state === "running") return;
@@ -866,7 +875,7 @@ async function generateStudy() {
     $("#sp-msg").textContent = j.state === "error" ? j.error : j.message;
     $("#sp-fill").style.width = `${Math.max(3, Math.round((j.done / Math.max(j.total, 1)) * 100))}%`;
     $("#sp-steps").textContent = j.total > 1 ? `Step ${Math.min(j.done + 1, j.total)} of ${j.total}` : "";
-    $("#sp-elapsed").textContent = formatTime(j.elapsed);
+    $("#sp-elapsed").textContent = timeText(j);
     $("#sp-cancel").hidden = j.state !== "running";
   };
   update(job);
@@ -1186,7 +1195,8 @@ async function loadBank() {
 function bankProgress(job) {
   $("#bank-progress").hidden = job.state !== "running";
   $("#bank-msg").textContent = job.message;
-  $("#bank-steps").textContent = job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total} · ${formatTime(job.elapsed)}` : "";
+  $("#bank-steps").textContent = (job.total > 1 ? `Step ${Math.min(job.done + 1, job.total)} of ${job.total} · ` : "") + timeText(job);
+  bankState.jobId = job.id;
   $("#bank-fill").style.width = `${Math.max(3, Math.round((job.done / Math.max(job.total, 1)) * 100))}%`;
 }
 
@@ -1341,7 +1351,8 @@ async function runConvert(files, target) {
 }
 
 function renderConvertJob(job) {
-  $("#conv-msg").textContent = job.state === "error" ? job.error : job.message;
+  $("#conv-cancel").hidden = job.state !== "running";
+  $("#conv-msg").textContent = job.state === "error" ? job.error : `${job.message} · ${timeText(job)}`;
   $("#conv-fill").style.width = `${Math.max(3, Math.round(((job.done + (job.state === "done" ? 1 : 0)) / Math.max(job.total, 1)) * 100))}%`;
   if (job.state === "running") return;
   clearInterval(convState.timer);
@@ -1355,14 +1366,76 @@ function renderConvertJob(job) {
     results.forEach((r) => el("a", { href: r.url, download: r.name }).click());
     return;
   }
-  $("#conv-results").hidden = false;
-  $("#conv-list").prepend(...results.map((r) => el("li", {},
+  loadConverted();
+  toast(`Converted ${plural(results.length, "file")}.`);
+}
+
+async function loadConverted() {
+  const files = await api("/api/converted").catch(() => []);
+  $("#conv-results").hidden = !files.length;
+  $("#conv-list").replaceChildren(...files.map((r) => el("li", {},
     el("span", { class: `file-icon ${ext(r.name).slice(1)}` }, ext(r.name).slice(1, 5)),
     el("div", { class: "item-main" }, el("div", { class: "item-name" }, r.name),
-      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(r.size / 1024))} KB`)),
-    el("span"),
-    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Download"))));
-  toast(`Converted ${plural(results.length, "file")}.`);
+      el("div", { class: "item-sub" }, `${Math.max(1, Math.round(r.size / 1024))} KB · ${new Date(r.created * 1000).toLocaleString()}`)),
+    el("a", { class: "btn small primary", href: r.url, download: r.name }, "Download"),
+    el("button", { class: "btn small ghost", type: "button", "aria-label": `Delete ${r.name}`, onclick: async () => {
+      await api(r.url, { method: "DELETE" }).catch((e) => toast(e.message));
+      loadConverted();
+    } }, "Delete"))));
+}
+
+async function deleteAllConverted() {
+  if (!confirm("Delete all converted files?")) return;
+  const r = await api("/api/converted", { method: "DELETE" }).catch((e) => toast(e.message));
+  if (r) toast(`Deleted ${plural(r.removed, "file")}.`);
+  loadConverted();
+}
+
+async function deleteAllData() {
+  const settings = $("#wipe-settings").checked;
+  const answer = prompt("This deletes all your uploaded files, exams, study sets, converted files, the question bank and analyses"
+    + (settings ? ", plus your AI settings and API keys" : "") + ". It can't be undone.\n\nType DELETE to confirm.");
+  if (answer === null) return;
+  if (answer.trim().toUpperCase() !== "DELETE") return toast("Nothing was deleted.");
+  try {
+    await api("/api/data/delete-all", { json: { confirm: "DELETE", settings } });
+  } catch (e) { return toast(e.message); }
+  try {
+    Object.keys(localStorage).filter((k) => k.startsWith("sgpt:") && (settings || k !== "sgpt:ai")).forEach((k) => localStorage.removeItem(k));
+  } catch { /* storage blocked */ }
+  toast("All data deleted.");
+  setTimeout(() => location.reload(), 800);
+}
+
+// ---------- Jobs on other pages: progress, time left and Stop ---------------------------
+const JOB_PAGES = { generate: "create", analyse: "create", regenerate: "create", bank: "bank", "bank-solve": "bank",
+  study: "study", ask: "study", ocr: "ocr", convert: "convert" };
+const JOB_NAMES = { generate: "Writing your exam", analyse: "Analysing past papers", regenerate: "Rewriting a question",
+  bank: "Sorting the question bank", "bank-solve": "Answering bank questions", study: "Making study material",
+  ask: "Answering your question", ocr: "OCR", convert: "Converting files" };
+const dock = { timer: null };
+
+function currentView() { return $(".nav-link.active")?.dataset.view; }
+
+async function stopJob(id) {
+  await api(`/api/jobs/${id}/cancel`, { method: "POST" }).catch(() => {});
+  toast("Stopping after the current step…");
+}
+
+async function pollDock() {
+  let jobs = [];
+  try { jobs = await api("/api/jobs/running"); } catch { /* server restarting */ }
+  // Jobs on another page, plus the two that have no Stop button on their own page.
+  const away = jobs.filter((j) => JOB_PAGES[j.kind] !== currentView() || j.kind === "regenerate" || j.kind === "ask");
+  $("#job-dock").replaceChildren(...away.map((j) => el("div", { class: "job-card" },
+    el("div", { class: "job-top" },
+      el("button", { class: "job-name", type: "button", title: "Go to this page", onclick: () => showView(JOB_PAGES[j.kind]) }, JOB_NAMES[j.kind] || j.kind),
+      el("button", { class: "btn small", type: "button", onclick: () => stopJob(j.id) }, "Stop")),
+    el("div", { class: "job-msg", title: j.message }, j.message),
+    el("div", { class: "bar" }, el("div", { style: `width:${Math.max(3, Math.round((j.done / Math.max(j.total, 1)) * 100))}%` })),
+    el("div", { class: "job-msg" }, timeText(j)))));
+  clearTimeout(dock.timer);
+  dock.timer = setTimeout(pollDock, jobs.length ? 1500 : 6000);
 }
 
 function download(name, text, type) {
@@ -1407,6 +1480,11 @@ function renderOcrResults() {
 // ---------- Wiring ---------------------------------------------------------------------
 function wire() {
   $$(".nav-link").forEach((b) => b.addEventListener("click", () => showView(b.dataset.view)));
+  $("#bank-cancel").addEventListener("click", () => bankState.jobId && stopJob(bankState.jobId));
+  $("#conv-cancel").addEventListener("click", () => convState.jobId && stopJob(convState.jobId));
+  $("#conv-clear").addEventListener("click", deleteAllConverted);
+  $("#wipe-all").addEventListener("click", deleteAllData);
+  pollDock();
   $$("[data-view-link]").forEach((b) => b.addEventListener("click", () => {
     showView(b.dataset.viewLink);
     if (!state.jobId) showStage("empty");

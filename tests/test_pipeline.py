@@ -267,3 +267,40 @@ def test_compiled_chapters_are_all_found_and_analysed(tmp_path):
     assert "=== Bab 12 Topik 12 ===" in joined and "Chapter 12 question 15" in joined  # the end is read too
     source = Source("paper", "all_chapters.pdf", paper.text, paper=paper)
     assert analysis_steps([source], 12000) == len(parts)
+
+
+def test_busy_provider_is_retried(fake_ai, monkeypatch):
+    """Gemini-style "503: high demand" errors are retried after a wait, then reported clearly."""
+    import pytest
+
+    from sgpt import ollama_client
+    from sgpt.ollama_client import Cancelled, LLMError
+    from sgpt.providers import OpenAICompatClient
+
+    monkeypatch.setattr(ollama_client, "RETRY_WAITS", (0.01, 0.01, 0.01))
+    host, server = fake_ai
+    client = OpenAICompatClient(host + "/v1", "good-key", "gpt-test", label="Google Gemini")
+
+    server.busy = 2
+    assert client.chat("You write study notes.", "x")  # two 503s, then it works
+    assert server.busy == 0
+
+    class Job:
+        notes = []
+
+        def note(self, message):
+            self.notes.append(message)
+
+        def cancelled(self):
+            return False
+
+    job = Job()
+    server.busy = 10
+    with pytest.raises(LLMError, match=r"busy or having problems \(error 503\).*high demand.*another model"):
+        client.chat("You write study notes.", "x", should_stop=job.cancelled)
+    assert len(job.notes) == 3 and "Google Gemini is busy right now" in job.notes[0]
+
+    monkeypatch.setattr(ollama_client, "RETRY_WAITS", (30,))
+    server.busy = 10
+    with pytest.raises(Cancelled):  # Stop works while waiting
+        client.chat("You write study notes.", "x", should_stop=lambda: True)
