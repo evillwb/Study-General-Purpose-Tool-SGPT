@@ -10,7 +10,7 @@ import re
 import uuid
 from datetime import datetime
 
-from . import i18n
+from . import i18n, study_more
 from .generator import NOTES_LIMIT, Progress, _as_int, _chunks, _text, summarise_source
 from .ollama_client import parse_json
 from .sources import Source, source_languages
@@ -324,8 +324,24 @@ def make_vocab(client, material: str, o: dict, steps, progress) -> dict:
                 items.append({k: _text(r.get(k)) for k in ("word", "part_of_speech", "meaning",
                                                            "example", "translation")}
                              | {"synonyms": [_text(s) for s in (r.get("synonyms") or []) if _text(s)][:3]})
+    for item in items:  # Chinese words (or translations) get their pinyin
+        for key in ("word", "translation"):
+            reading = pinyin_of(item.get(key, ""))
+            if reading:
+                item[f"{key}_pinyin"] = reading
     return {"title": f"Vocabulary: {o['topic'] or ', '.join(words[:3]) or 'list'}",
             "translate_to": target, "words": items}
+
+
+def pinyin_of(text: str) -> str:
+    """Pinyin with tone marks for Chinese text ("" if none, or pypinyin isn't installed)."""
+    if not re.search(r"[\u3400-\u9fff]", text or ""):
+        return ""
+    try:
+        from pypinyin import Style, pinyin
+    except ImportError:
+        return ""
+    return " ".join(p[0] for p in pinyin(text, style=Style.TONE) if p and p[0].strip())
 
 
 def make_quiz(client, material: str, o: dict, steps, progress) -> dict:
@@ -465,7 +481,8 @@ def _extra(o: dict) -> str:
 
 
 MAKERS = {"notes": make_notes, "flashcards": make_flashcards, "vocab": make_vocab,
-          "quiz": make_quiz, "grammar": make_grammar}
+          "quiz": make_quiz, "grammar": make_grammar, **study_more.MAKERS}
+KINDS.update(study_more.KINDS)
 
 
 def generate(client, kind: str, sources: list[Source], options: dict,
@@ -480,17 +497,19 @@ def generate(client, kind: str, sources: list[Source], options: dict,
     big = sum(len(s.text) for s in sources) > 9000
     note_steps = sum(len(_chunks(s.text, 9000)) for s in sources) if big else 0
     steps = _Steps(progress, note_steps + 4)
-    material = "" if kind == "grammar" else _material(client, sources, o["topic"], o["language"],
-                                                      progress, steps)
+    material = "" if kind in study_more.NO_SOURCES or not sources else _material(
+        client, sources, o["topic"], o["language"], progress, steps)
     result = MAKERS[kind](client, material, o, steps, progress)
     progress.step(steps.done, steps.done, "Done")
-    if kind != "notes" and not (result.get("cards") or result.get("words") or result.get("items")):
+    if kind in ("flashcards", "vocab", "quiz", "grammar") and not (
+            result.get("cards") or result.get("words") or result.get("items")):
         raise RuntimeError("The AI did not return anything usable. Try again or another model.")
     return {"id": uuid.uuid4().hex[:10], "kind": kind,
             "created": datetime.now().isoformat(timespec="seconds"),
             "model": getattr(client, "model", ""), "language": o["language"],
             "options": {k: v for k, v in options.items()
-                        if k not in ("text", "bank", "analysis", "source_languages")},
+                        if k not in ("text", "bank", "analysis", "source_languages", "essay",
+                                     "bank_chapters")},
             "sources": [s.citation() for s in sources], **result}
 
 
@@ -512,6 +531,8 @@ def as_markdown(s: dict) -> str:
     kind = s["kind"]
     if kind == "notes":
         return s["markdown"]
+    if kind in study_more.KINDS:
+        return study_more.as_markdown(s)
     out = [f"# {s['title']}", ""]
     if kind == "flashcards":
         for i, c in enumerate(s["cards"], 1):
@@ -521,7 +542,9 @@ def as_markdown(s: dict) -> str:
         out += ["| Word | Type | Meaning | Example" + (" | Translation" if lang else "") + " |",
                 "|---|---|---|---" + ("|---" if lang else "") + "|"]
         for w in s["words"]:
-            cells = [w["word"], w["part_of_speech"], w["meaning"], w["example"]] + ([w["translation"]] if lang else [])
+            word = w["word"] + (f" ({w['word_pinyin']})" if w.get("word_pinyin") else "")
+            translation = w.get("translation", "") + (f" ({w['translation_pinyin']})" if w.get("translation_pinyin") else "")
+            cells = [word, w["part_of_speech"], w["meaning"], w["example"]] + ([translation] if lang else [])
             out.append("| " + " | ".join(c.replace("|", "/") for c in cells) + " |")
         out.append("")
     else:

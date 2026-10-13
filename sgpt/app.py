@@ -26,12 +26,13 @@ from .generator import (DEFAULT_PLAN, EXAM_TEMPLATES, DIFFICULTY_MIX, DIFFICULTY
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
 from . import bank as qbank
-from . import convert, figures, media, ocr, quizapps, study
+from . import convert, figures, media, ocr, quizapps, study, study_more
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
 from .providers import (PROVIDERS, SEARCH_ENGINES, config_path, make_client, mask_key,
                         resolve_base_url, resolve_key, save_provider_config, save_search_settings,
                         search_settings)
+from .pdf_extract import _read_pages as read_pdf_pages
 from .sources import (SUPPORTED_SUFFIXES, SourceError, gather_sources, library_files,
                       library_meta, load_file, load_library, save_library_meta)
 
@@ -207,7 +208,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             difficulty_mix=DIFFICULTY_MIX,
             languages=[{"id": k, "label": v["label"]} for k, v in LANGUAGES.items()],
             study={"kinds": study.KINDS, "note_styles": study.NOTE_STYLE_LABELS,
-                   "grammar_tests": study.GRAMMAR_TESTS},
+                   "grammar_tests": study.GRAMMAR_TESTS,
+                   "essay_types": {k: v[0] for k, v in study_more.ESSAY_TYPES.items()}},
             providers=[{
                 "id": info.id, "label": info.label, "kind": info.kind,
                 "default_model": info.default_model, "key_url": info.key_url,
@@ -473,7 +475,33 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             out["html"] = render_html(data["markdown"])
         for qa in out.get("qa", []):
             qa["html"] = render_html(qa["answer"])
+        for m in out.get("messages", []):
+            m["html"] = render_html(m["answer"])
+        if data["kind"] == "planner" and data.get("tips"):
+            out["tips_html"] = render_html(data["tips"])
         return out
+
+    def chat_chunks(data: dict) -> list[dict]:
+        """Searchable pieces of the chat's sources: the library files (page by page) and
+        any pasted text."""
+        files = []
+        opts = data.get("options") or {}
+        if opts.get("use_files", True):
+            meta = library_meta(library_dir)
+            for path in library_files(library_dir):
+                if meta.get(path.name, {}).get("use") is False:
+                    continue
+                try:
+                    if path.suffix.lower() == ".pdf":
+                        pages, _ = read_pdf_pages(path)
+                    else:
+                        pages = [load_file(path).text]
+                except Exception:  # noqa: BLE001 - an unreadable file is skipped
+                    continue
+                files.append((path.name, pages))
+        if data.get("text"):
+            files.append(("Pasted text", [data["text"]]))
+        return study_more.source_chunks(files)
 
     @app.get("/api/study")
     def list_sets():
@@ -497,12 +525,16 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         c, _ = client_from(s)
         options = {k: s.get(k) for k in ("topic", "level", "language", "count", "style", "length",
                                          "words", "translate_to", "difficulty", "test",
-                                         "instructions") if s.get(k) not in (None, "")}
+                                         "instructions", "essay", "essay_type", "question",
+                                         "exam_date", "start_date", "hours", "chapters", "weak",
+                                         "rest_days", "use_files") if s.get(k) not in (None, "")}
 
         def work(job: Job):
             c.check_model()
             sources = []
-            if kind != "grammar":
+            if kind == "planner" and not (options.get("chapters") or "").strip():
+                options["bank_chapters"] = (cached_bank(selected_papers()) or {}).get("chapters") or []
+            if kind not in study_more.NO_SOURCES:
                 engine, engine_key = search_settings()
                 has_own = s.get("use_files") or (s.get("text") or "").strip() or (s.get("urls") or "").strip() \
                     or (kind == "vocab" and (s.get("words") or "").strip())
@@ -522,6 +554,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
                 options["analysis"] = cached_analysis(papers)
             data = study.generate(c, kind, sources, options, progress=job)
             data["provider"] = s.get("provider") or "ollama"
+            if kind == "chat" and (s.get("text") or "").strip():
+                data["text"] = s["text"].strip()
             save_set(data)
             job.result = {"id": data["id"]}
 
@@ -547,6 +581,17 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         c, _ = client_from(s)
 
         def work(job: Job):
+            if data["kind"] == "chat":
+                job.step(0, 2, "Searching your sources…")
+                chunks = chat_chunks(data)
+                job.step(1, 2, "Thinking…")
+                reply = study_more.chat_answer(c, data, question, chunks, job)
+                message = {"question": question, **reply}
+                data.setdefault("messages", []).append(message)
+                save_set(data)
+                job.result = {**message, "html": render_html(reply["answer"])}
+                job.step(2, 2, "Done")
+                return
             job.step(0, 1, "Thinking…")
             answer = study.ask(c, data, question, progress=job)
             data.setdefault("qa", []).append({"question": question, "answer": answer})
@@ -577,6 +622,11 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         if fmt in ("kahoot", "quizlet"):
             return quiz_app_download(fmt, data["title"], quizapps.mcq_from_study(data),
                                      lambda: quizapps.pairs_from_study(data))
+        if fmt == "ics":
+            if data["kind"] != "planner":
+                abort(400, "Calendar export is for study plans")
+            return Response(study_more.plan_ics(data), mimetype="text/calendar",
+                            headers={"Content-Disposition": "attachment; filename=study-plan.ics"})
         if fmt == "csv":
             try:
                 text = study.as_csv(data)
