@@ -16,7 +16,8 @@
       <span class="brand-text"><strong>SGPT</strong><small>Study General Purpose Tool</small></span>
     </div>
     <nav class="nav" aria-label="Main">
-      <button class="nav-link active" data-view="create" type="button">Create</button>
+      <button class="nav-link active" data-view="create" type="button">Exam</button>
+      <button class="nav-link" data-view="study" type="button">Study</button>
       <button class="nav-link" data-view="library" type="button">My exams <span id="exam-count" class="count"></span></button>
       <button class="nav-link" data-view="bank" type="button">Question bank</button>
       <button class="nav-link" data-view="ocr" type="button">OCR</button>
@@ -228,6 +229,97 @@
       </div>
     </section>
     <div id="ocr-results" class="ocr-results"></div>
+  </main>
+
+  <!-- ============ STUDY TOOLS ============ -->
+  <main id="view-study" class="create" hidden>
+    <aside class="builder" aria-label="Study tools">
+      <section class="panel">
+        <div class="tool-grid" role="tablist" aria-label="Study tool">
+          <button class="tool active" data-tool="notes" type="button"><span>📝</span><b>Notes</b><small>Study notes &amp; guides</small></button>
+          <button class="tool" data-tool="flashcards" type="button"><span>🃏</span><b>Flashcards</b><small>Flip &amp; memorise</small></button>
+          <button class="tool" data-tool="vocab" type="button"><span>🔤</span><b>Vocabulary</b><small>Meanings &amp; examples</small></button>
+          <button class="tool" data-tool="quiz" type="button"><span>⏱️</span><b>MCQ quiz</b><small>Timed or untimed</small></button>
+          <button class="tool" data-tool="grammar" type="button"><span>✍️</span><b>Grammar</b><small>Tenses, word form, Malay</small></button>
+        </div>
+      </section>
+      <section class="panel" id="study-form">
+        <h2 class="panel-title" id="study-form-title">Notes</h2>
+        <input id="st-topic" class="big-input" placeholder="Topic, e.g. Cell division" autocomplete="off">
+        <div class="row">
+          <label class="field">Level <input id="st-level" placeholder="e.g. Form 4, GCSE"></label>
+          <label class="field" data-for="notes flashcards vocab quiz">Language <select id="st-language"></select></label>
+          <label class="field" data-for="grammar">Test
+            <select id="st-test"></select>
+          </label>
+        </div>
+        <label class="field" data-for="notes">Style <select id="st-style"></select></label>
+        <p class="hint" data-for="notes" id="st-style-hint"></p>
+        <div data-for="notes">
+          <div class="field-label">Length</div>
+          <div class="segmented" role="radiogroup" aria-label="Length">
+            <label><input type="radio" name="st-length" value="short"><span>Short</span></label>
+            <label><input type="radio" name="st-length" value="medium" checked><span>Medium</span></label>
+            <label><input type="radio" name="st-length" value="long"><span>Long</span></label>
+          </div>
+        </div>
+        <label class="field" data-for="vocab">Words (optional, one per line or comma-separated)
+          <textarea id="st-words" rows="4" placeholder="Leave empty to pick the key words from your topic and sources"></textarea>
+        </label>
+        <div class="row">
+          <label class="field" data-for="flashcards vocab quiz grammar">How many <input id="st-count" type="number" min="1" max="100" value="20"></label>
+          <label class="field" data-for="vocab">Translate to <select id="st-translate"><option value="">No translation</option></select></label>
+          <label class="field" data-for="quiz">Difficulty
+            <select id="st-difficulty"><option value="mixed">Mixed</option><option value="easy">Easy</option><option value="medium">Medium</option><option value="hard">Hard</option></select>
+          </label>
+        </div>
+        <div data-for="notes flashcards vocab quiz" class="study-sources">
+          <div class="field-label">Sources</div>
+          <label class="check"><input id="st-files" type="checkbox"> Use the files on the Exam page (<span id="st-files-n">0</span>)</label>
+          <details class="more">
+            <summary>Paste text or links</summary>
+            <textarea id="st-text" rows="5" placeholder="Paste notes, a textbook extract…"></textarea>
+            <textarea id="st-urls" rows="2" placeholder="Links, one per line"></textarea>
+          </details>
+          <label class="field">Internet search
+            <select id="st-web">
+              <option value="auto">Only if I give no sources</option>
+              <option value="on">Always add web results</option>
+              <option value="off">Never</option>
+            </select>
+          </label>
+        </div>
+        <details class="more">
+          <summary>Instructions for the AI</summary>
+          <textarea id="st-instructions" rows="3" placeholder="e.g. Focus on chapter 3. Use simple English."></textarea>
+        </details>
+        <button id="st-generate" class="btn primary big" type="button">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.6L19.5 10l-5.6 1.9L12 17.5l-1.9-5.6L4.5 10l5.6-1.4z"/></svg>
+          <span id="st-generate-label">Make notes</span>
+        </button>
+        <p id="st-hint" class="hint center"></p>
+      </section>
+      <section class="panel">
+        <h2 class="panel-title">Recent</h2>
+        <ul id="study-recent" class="file-list"></ul>
+      </section>
+    </aside>
+    <section class="stage" aria-live="polite">
+      <div id="study-empty" class="empty">
+        <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span></div>
+        <h1>Study smarter</h1>
+        <p class="lead">Turn a topic, your notes, PDFs or links into study notes, flashcards, vocabulary lists, timed quizzes and grammar practice.</p>
+      </div>
+      <div id="study-progress" class="progress-card" hidden>
+        <div class="progress-top">
+          <div><h2 id="sp-title">Working…</h2><p id="sp-msg" class="muted"></p></div>
+          <button id="sp-cancel" class="btn" type="button">Stop</button>
+        </div>
+        <div class="bar"><div id="sp-fill"></div></div>
+        <div class="progress-meta"><span id="sp-steps"></span><span id="sp-elapsed"></span></div>
+      </div>
+      <div id="study-view" class="study-view" hidden></div>
+    </section>
   </main>
 
   <!-- ============ QUESTION BANK ============ -->

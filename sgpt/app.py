@@ -24,7 +24,7 @@ from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
 from . import bank as qbank
-from . import convert, ocr
+from . import convert, ocr, study
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
 from .providers import (PROVIDERS, SEARCH_ENGINES, make_client, mask_key, resolve_base_url,
@@ -49,7 +49,7 @@ def _safe_filename(name: str) -> str:
 def render_html(text: str) -> str:
     # Escape raw HTML tags the model might emit; Markdown formatting is unaffected.
     text = re.sub(r"<(?=[A-Za-z/!])", "&lt;", text)
-    return md.markdown(text, extensions=["extra", "sane_lists"])
+    return md.markdown(convert.keep_box_lines(text), extensions=["extra", "sane_lists"])
 
 
 class Job(Progress):
@@ -165,6 +165,8 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             difficulties=list(DIFFICULTY_TEXT),
             difficulty_mix=DIFFICULTY_MIX,
             languages=[{"id": k, "label": v["label"]} for k, v in LANGUAGES.items()],
+            study={"kinds": study.KINDS, "note_styles": study.NOTE_STYLE_LABELS,
+                   "grammar_tests": study.GRAMMAR_TESTS},
             providers=[{
                 "id": info.id, "label": info.label, "kind": info.kind,
                 "default_model": info.default_model, "key_url": info.key_url,
@@ -387,6 +389,128 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         text = qbank.render_bank(bank, "hardest" if view == "hardest" else "chapters", per_chapter)
         title = f"Hardest {per_chapter} questions per chapter" if view == "hardest" else "Questions by chapter"
         return download(text, request.args.get("format", "md"), title)
+
+    # --- Study tools (notes, flashcards, vocabulary, quiz, grammar) ---------------------
+    study_dir = output_dir / "study"
+    study_dir.mkdir(exist_ok=True)
+
+    def study_path(set_id: str) -> Path:
+        if not _EXAM_ID.match(set_id):
+            abort(404, "Not found")
+        return study_dir / f"{set_id}.json"
+
+    def load_set(set_id: str) -> dict:
+        path = study_path(set_id)
+        if not path.exists():
+            abort(404, "Not found")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def save_set(data: dict) -> None:
+        with lock:
+            study_path(data["id"]).write_text(json.dumps(data, indent=2, ensure_ascii=False),
+                                              encoding="utf-8")
+
+    def set_payload(data: dict) -> dict:
+        out = dict(data)
+        if data["kind"] == "notes":
+            out["html"] = render_html(data["markdown"])
+        for qa in out.get("qa", []):
+            qa["html"] = render_html(qa["answer"])
+        return out
+
+    @app.get("/api/study")
+    def list_sets():
+        items = []
+        for path in sorted(study_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+            try:
+                d = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            size = len(d.get("cards") or d.get("words") or d.get("items") or [])
+            items.append({"id": d["id"], "kind": d["kind"], "title": d["title"],
+                          "created": d["created"], "size": size})
+        return jsonify(items)
+
+    @app.post("/api/study/generate")
+    def generate_set():
+        s = request.get_json(force=True) or {}
+        kind = s.get("kind")
+        if kind not in study.KINDS:
+            abort(400, "Unknown study tool")
+        c, _ = client_from(s)
+        options = {k: s.get(k) for k in ("topic", "level", "language", "count", "style", "length",
+                                         "words", "translate_to", "difficulty", "test",
+                                         "instructions") if s.get(k) not in (None, "")}
+
+        def work(job: Job):
+            c.check_model()
+            sources = []
+            if kind != "grammar":
+                engine, engine_key = search_settings()
+                has_own = s.get("use_files") or (s.get("text") or "").strip() or (s.get("urls") or "").strip() \
+                    or (kind == "vocab" and (s.get("words") or "").strip())
+                try:
+                    sources = gather_sources(
+                        folder=library_dir if s.get("use_files") else None, text=s.get("text") or "",
+                        urls=str(s.get("urls") or "").splitlines(),
+                        topic=options.get("topic", ""), web=s.get("web") or ("auto" if not has_own else "off"),
+                        engine=engine, engine_key=engine_key,
+                        language=options.get("language") or "en", step=job.note, warn=job.warn)
+                except SourceError as exc:
+                    if kind != "vocab":
+                        raise RuntimeError(str(exc)) from None
+            if kind == "notes" and options.get("style") == "guide":
+                papers = selected_papers()
+                options["bank"] = cached_bank(papers)
+                options["analysis"] = cached_analysis(papers)
+            data = study.generate(c, kind, sources, options, progress=job)
+            data["provider"] = s.get("provider") or "ollama"
+            save_set(data)
+            job.result = {"id": data["id"]}
+
+        return start_job(Job("study"), work)
+
+    @app.get("/api/study/<set_id>")
+    def get_set(set_id):
+        return jsonify(set_payload(load_set(set_id)))
+
+    @app.delete("/api/study/<set_id>")
+    def delete_set(set_id):
+        load_set(set_id)
+        study_path(set_id).unlink()
+        return jsonify(ok=True)
+
+    @app.post("/api/study/<set_id>/ask")
+    def ask_set(set_id):
+        data = load_set(set_id)
+        s = request.get_json(force=True) or {}
+        question = str(s.get("question") or "").strip()
+        if not question:
+            abort(400, "Type a question")
+        c, _ = client_from(s)
+
+        def work(job: Job):
+            job.step(0, 1, "Thinking…")
+            answer = study.ask(c, data, question, progress=job)
+            data.setdefault("qa", []).append({"question": question, "answer": answer})
+            save_set(data)
+            job.result = {"question": question, "answer": answer, "html": render_html(answer)}
+            job.step(1, 1, "Done")
+
+        return start_job(Job("ask"), work)
+
+    @app.get("/api/study/<set_id>/export")
+    def export_set(set_id):
+        data = load_set(set_id)
+        fmt = request.args.get("format", "md")
+        if fmt == "csv":
+            try:
+                text = study.as_csv(data)
+            except ValueError as exc:
+                abort(400, str(exc))
+            return Response("\ufeff" + text, mimetype="text/csv", headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(data['title'][:60])}.csv"})
+        return download(study.as_markdown(data), fmt, data["title"])
 
     # --- Exams ------------------------------------------------------------------------
     def exam_path(exam_id: str) -> Path:

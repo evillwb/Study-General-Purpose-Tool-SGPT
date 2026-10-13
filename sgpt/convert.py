@@ -29,12 +29,17 @@ TARGETS = {"pdf": "PDF", "docx": "Word (.docx)", "txt": "Text (.txt)", "md": "Ma
            "html": "Web page (.html)", "png": "Images (.png)"}
 
 PAGE_CSS = """
-body { font-family: sans-serif; font-size: 11pt; line-height: 1.45; color: #111; }
-h1 { font-size: 20pt; margin: 0 0 10pt; } h2 { font-size: 15pt; margin: 14pt 0 6pt; }
-h3 { font-size: 12.5pt; margin: 12pt 0 4pt; } p { margin: 0 0 7pt; }
-ul, ol { margin: 0 0 7pt 18pt; } li { margin: 0 0 3pt; }
-blockquote { margin: 6pt 0; padding-left: 8pt; color: #444; border-left: 2pt solid #999; }
-table { border-collapse: collapse; margin: 6pt 0; } td, th { border: 0.5pt solid #888; padding: 3pt 5pt; }
+body { font-family: serif; font-size: 10.5pt; line-height: 1.45; color: #111; }
+h1 { font-size: 22pt; margin: 0 0 8pt; color: #1f3f7a; }
+h2 { font-size: 15pt; margin: 16pt 0 6pt; color: #1f3f7a; border-bottom: 0.8pt solid #1f3f7a; padding-bottom: 2pt; }
+h3 { font-size: 12pt; margin: 12pt 0 4pt; } h4 { font-size: 11pt; margin: 10pt 0 3pt; }
+p { margin: 0 0 6pt; }
+ul, ol { margin: 0 0 6pt 14pt; } li { margin: 0 0 2pt; }
+blockquote { margin: 6pt 0 8pt; padding: 6pt 9pt; background-color: #f2f3f5; border: 0.6pt solid #b9bec7; }
+blockquote p { margin: 0 0 2pt; }
+table { border-collapse: collapse; margin: 6pt 0 8pt; width: 100%; }
+th { border-top: 1pt solid #333; border-bottom: 0.6pt solid #333; padding: 3pt 5pt; text-align: left; }
+td { border-bottom: 0.4pt solid #ccc; padding: 3pt 5pt; vertical-align: top; }
 code, pre { font-family: monospace; font-size: 9.5pt; } hr { border: 0; border-top: 0.5pt solid #aaa; }
 """
 
@@ -84,13 +89,25 @@ def _lo_convert(src: Path, fmt: str, out_dir: Path) -> Path:
     return out
 
 
+def keep_box_lines(text: str) -> str:
+    """Each line of a "> " box stays on its own line (Markdown would join them)."""
+    lines = text.split("\n")
+    for i in range(len(lines) - 1):
+        if lines[i].startswith(">") and lines[i + 1].startswith(">") and lines[i + 1][1:].strip() \
+                and lines[i][1:].strip() and not lines[i].endswith("  "):
+            lines[i] += "  "
+    return "\n".join(lines)
+
+
 def markdown_to_html(text: str, title: str = "") -> str:
-    body = md_lib.markdown(text, extensions=["extra", "sane_lists"])
+    body = md_lib.markdown(keep_box_lines(text), extensions=["extra", "sane_lists"])
     return (f"<!doctype html><html><head><meta charset='utf-8'><title>{html_lib.escape(title)}"
             f"</title><style>{PAGE_CSS}</style></head><body>{body}</body></html>")
 
 
-def html_to_pdf(page_html: str, out: Path) -> Path:
+def html_to_pdf(page_html: str, out: Path, header: str = "") -> Path:
+    """Lay out HTML on A4 pages; with a header, every page after the first gets a running
+    header and all pages a centred page number, like a printed handout."""
     import pymupdf
 
     body = re.search(r"<body[^>]*>(.*)</body>", page_html, re.DOTALL | re.IGNORECASE)
@@ -100,10 +117,25 @@ def html_to_pdf(page_html: str, out: Path) -> Path:
     more = True
     while more:
         device = writer.begin_page(page)
-        more, _ = story.place(page + (56, 56, -56, -56))
+        more, _ = story.place(page + (56, 62, -56, -56))
         story.draw(device)
         writer.end_page()
     writer.close()
+    if header:
+        doc = pymupdf.open(out)
+        if len(doc) > 1:
+            for number, pg in enumerate(doc, 1):
+                width = pg.rect.width
+                if number > 1:
+                    pg.insert_htmlbox(pymupdf.Rect(56, 26, width - 56, 44),
+                                      f"<div style='font-size:8.5pt;color:#555;font-family:serif'>"
+                                      f"{html_lib.escape(header)}</div>")
+                    pg.draw_line((56, 44), (width - 56, 44), color=(0.6, 0.6, 0.6), width=0.4)
+                pg.insert_htmlbox(pymupdf.Rect(56, pg.rect.height - 38, width - 56, pg.rect.height - 24),
+                                  f"<div style='font-size:9pt;text-align:center;font-family:serif'>"
+                                  f"– {number} –</div>")
+            doc.saveIncr()
+        doc.close()
     return out
 
 
@@ -406,7 +438,7 @@ def export_markdown(text: str, fmt: str, title: str = "") -> tuple[bytes, str]:
     with tempfile.TemporaryDirectory() as tmp:
         out = Path(tmp) / f"export.{fmt}"
         if fmt == "pdf":
-            html_to_pdf(markdown_to_html(text, title), out)
+            html_to_pdf(markdown_to_html(text, title), out, header=title)
             return out.read_bytes(), "application/pdf"
         if fmt == "docx":
             markdown_to_docx(text, out, title)

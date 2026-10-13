@@ -134,6 +134,7 @@ async function checkStatus() {
     $("#model-status").textContent = s.error || "";
   }
   updateGenerate();
+  renderStudyForm();
 }
 
 function wireSettings() {
@@ -719,6 +720,8 @@ function showView(view) {
   $("#view-ocr").hidden = view !== "ocr";
   $("#view-convert").hidden = view !== "convert";
   $("#view-bank").hidden = view !== "bank";
+  $("#view-study").hidden = view !== "study";
+  if (view === "study") { loadStudyRecent(); renderStudyForm(); }
   if (view === "bank") loadBank();
   $$(".nav-link").forEach((b) => b.classList.toggle("active", b.dataset.view === view));
   if (view === "library") loadExams();
@@ -782,6 +785,375 @@ async function exportText(markdown, format, title) {
     el("a", { href: url, download: `${title}.${format}` }).click();
     setTimeout(() => URL.revokeObjectURL(url), 2000);
   } catch (e) { toast(e.message); }
+}
+
+// ---------- Study tools ---------------------------------------------------------------
+const studyState = { tool: "notes", set: null, jobId: null, fc: null, quiz: null };
+const STUDY_FIELDS = ["st-topic", "st-level", "st-language", "st-test", "st-style", "st-words", "st-count",
+  "st-translate", "st-difficulty", "st-text", "st-urls", "st-web", "st-instructions"];
+const TOOL_LABELS = { notes: "Make notes", flashcards: "Make flashcards", vocab: "Explain vocabulary",
+  quiz: "Make quiz", grammar: "Make grammar test" };
+const STYLE_HINTS = {
+  guide: "Print-ready guide, chapter by chapter: key formulas in boxes, exam tips and traps. Uses your question bank and past-paper analysis for the patterns table and checklist.",
+  chapter: "A chapter handout: a key-terms table (term, definition, example), then short bullet sections, comparison tables and arrow flows.",
+};
+
+function initStudy() {
+  const m = state.meta.study;
+  $("#st-style").replaceChildren(...Object.entries(m.note_styles).map(([id, label]) => el("option", { value: id }, label)));
+  $("#st-test").replaceChildren(...Object.entries(m.grammar_tests).map(([id, label]) => el("option", { value: id }, label)));
+  $("#st-language").replaceChildren(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+  $("#st-translate").append(...state.meta.languages.map((l) => el("option", { value: l.id }, l.label)));
+  const saved = store.get("study", {});
+  STUDY_FIELDS.forEach((id) => { if (saved[id] != null) $("#" + id).value = saved[id]; });
+  if (saved.length) $(`input[name=st-length][value=${saved.length}]`).checked = true;
+  $("#st-files").checked = Boolean(saved.files);
+  studyState.tool = saved.tool || "notes";
+  $$(".tool").forEach((b) => b.addEventListener("click", () => { studyState.tool = b.dataset.tool; saveStudy(); renderStudyForm(); }));
+  $("#study-form").addEventListener("input", () => { saveStudy(); renderStudyForm(); });
+  $("#st-generate").addEventListener("click", generateStudy);
+  $("#sp-cancel").addEventListener("click", () => studyState.jobId && api(`/api/jobs/${studyState.jobId}/cancel`, { method: "POST" }).catch(() => {}));
+  renderStudyForm();
+}
+
+function saveStudy() {
+  const data = Object.fromEntries(STUDY_FIELDS.map((id) => [id, $("#" + id).value]));
+  data.length = $("input[name=st-length]:checked").value;
+  data.files = $("#st-files").checked;
+  data.tool = studyState.tool;
+  store.set("study", data);
+}
+
+function renderStudyForm() {
+  const tool = studyState.tool;
+  $$(".tool").forEach((b) => b.classList.toggle("active", b.dataset.tool === tool));
+  $$("#study-form [data-for]").forEach((n) => (n.hidden = !n.dataset.for.split(" ").includes(tool)));
+  $("#study-form-title").textContent = { notes: "Notes", flashcards: "Flashcards", vocab: "Vocabulary", quiz: "MCQ quiz", grammar: "Grammar test" }[tool];
+  $("#st-generate-label").textContent = TOOL_LABELS[tool];
+  $("#st-topic").placeholder = tool === "grammar" ? "Theme for the sentences (optional), e.g. school life" : "Topic, e.g. Cell division";
+  $("#st-style-hint").textContent = STYLE_HINTS[$("#st-style").value] || "";
+  $("#st-files-n").textContent = plural(state.library.filter((f) => f.use && f.readable).length, "file");
+  const topic = $("#st-topic").value.trim();
+  const own = $("#st-files").checked || $("#st-text").value.trim() || $("#st-urls").value.trim() || (tool === "vocab" && $("#st-words").value.trim());
+  let hint = "";
+  if (!state.statusOk) hint = "Set up your AI first: click the status at the top right.";
+  else if (tool !== "grammar" && !topic && !own) hint = "Type a topic or add some sources.";
+  else if (studyState.jobId || state.jobId) hint = "Working…";
+  $("#st-hint").textContent = hint;
+  $("#st-generate").disabled = Boolean(hint);
+}
+
+async function generateStudy() {
+  saveStudy();
+  const v = (id) => $("#" + id).value;
+  const body = { ...aiPayload(), kind: studyState.tool, topic: v("st-topic"), level: v("st-level"),
+    language: v("st-language"), count: v("st-count"), style: v("st-style"),
+    length: $("input[name=st-length]:checked").value, words: v("st-words"), translate_to: v("st-translate"),
+    difficulty: v("st-difficulty"), test: v("st-test"), instructions: v("st-instructions"),
+    use_files: $("#st-files").checked, text: v("st-text"), urls: v("st-urls"), web: v("st-web") };
+  let job;
+  try { job = await api("/api/study/generate", { json: body }); } catch (e) { return toast(e.message); }
+  studyState.jobId = job.id;
+  renderStudyForm();
+  studyShow("progress");
+  const update = (j) => {
+    $("#sp-title").textContent = { running: "Working on it…", error: "Something went wrong", cancelled: "Stopped", done: "Done" }[j.state];
+    $("#sp-msg").textContent = j.state === "error" ? j.error : j.message;
+    $("#sp-fill").style.width = `${Math.max(3, Math.round((j.done / Math.max(j.total, 1)) * 100))}%`;
+    $("#sp-steps").textContent = j.total > 1 ? `Step ${Math.min(j.done + 1, j.total)} of ${j.total}` : "";
+    $("#sp-elapsed").textContent = formatTime(j.elapsed);
+    $("#sp-cancel").hidden = j.state !== "running";
+  };
+  update(job);
+  job = await pollJob(job.id, update);
+  studyState.jobId = null;
+  renderStudyForm();
+  if (job.state === "done") { loadStudyRecent(); openSet(job.result.id); }
+  else if (job.state === "error") toast(job.error);
+}
+
+function studyShow(panel) {
+  for (const id of ["study-empty", "study-progress", "study-view"]) $("#" + id).hidden = id !== `study-${panel}`;
+  if (panel !== "empty" && window.matchMedia("(max-width: 980px)").matches) $("#view-study .stage").scrollIntoView({ behavior: "smooth" });
+}
+
+async function loadStudyRecent() {
+  const sets = await api("/api/study").catch(() => []);
+  const icons = { notes: "📝", flashcards: "🃏", vocab: "🔤", quiz: "⏱️", grammar: "✍️" };
+  $("#study-recent").replaceChildren(...(sets.length ? sets.slice(0, 15).map((x) => el("li", { style: "cursor:pointer", onclick: () => openSet(x.id) },
+    el("span", { style: "font-size:20px" }, icons[x.kind] || "📄"),
+    el("div", { class: "item-main" }, el("div", { class: "item-name", title: x.title }, x.title),
+      el("div", { class: "item-sub" }, `${state.meta.study.kinds[x.kind]}${x.size ? ` · ${x.size}` : ""} · ${new Date(x.created).toLocaleDateString()}`)),
+    el("span"),
+    el("button", { class: "icon-btn", type: "button", "aria-label": "Delete", onclick: async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete “${x.title}”?`)) return;
+      await api(`/api/study/${x.id}`, { method: "DELETE" }).catch((err) => toast(err.message));
+      if (studyState.set?.id === x.id) studyShow("empty");
+      loadStudyRecent();
+    } }, "✕"))) : [el("li", { class: "empty-note" }, "Nothing yet.")]));
+}
+
+async function openSet(id) {
+  try { studyState.set = await api(`/api/study/${id}`); } catch (e) { return toast(e.message); }
+  showView("study");
+  studyShow("view");
+  renderSet();
+}
+
+function exportButtons(set, formats) {
+  return el("div", { class: "actions" }, formats.map((f) => el("a", { class: "btn small", href: `/api/study/${set.id}/export?format=${f}` },
+    { docx: "Word", pdf: "PDF", md: "Markdown", csv: "CSV (Anki)" }[f])));
+}
+
+function renderSet() {
+  const s = studyState.set;
+  const head = el("div", { class: "sv-head" },
+    el("div", {}, el("h1", {}, s.title), el("div", { class: "chips" },
+      [state.meta.study.kinds[s.kind], s.style && state.meta.study.note_styles[s.style], s.model && `AI: ${s.model}`]
+        .filter(Boolean).map((c) => el("span", { class: "chip" }, c)))),
+    exportButtons(s, s.kind === "flashcards" || s.kind === "vocab" ? ["csv", "docx", "pdf", "md"] : ["docx", "pdf", "md"]));
+  const body = { notes: renderNotes, flashcards: renderFlashcards, vocab: renderVocab, quiz: renderQuizStart, grammar: renderQuizStart }[s.kind](s);
+  $("#study-view").replaceChildren(head, body);
+}
+
+// Notes
+function renderNotes(s) {
+  const sheet = el("article", { class: "sheet notes-sheet" });
+  sheet.innerHTML = s.html; // rendered and escaped on the server
+  if (s.style === "mindmap") mindmap(sheet);
+  const qa = el("div", { class: "review" }, (s.qa || []).map((x) => el("div", { class: "qa" }, el("b", {}, `Q: ${x.question}`), el("div", { html: x.html }))));
+  const input = el("input", { placeholder: "Ask a question about these notes…", "aria-label": "Question" });
+  const ask = async () => {
+    const question = input.value.trim();
+    if (!question) return;
+    let job;
+    try { job = await api(`/api/study/${s.id}/ask`, { json: { ...aiPayload(), question } }); } catch (e) { return toast(e.message); }
+    input.value = "";
+    const pending = el("div", { class: "qa" }, el("b", {}, `Q: ${question}`), el("p", { class: "muted" }, "Thinking…"));
+    qa.append(pending);
+    job = await pollJob(job.id, () => {});
+    if (job.state === "done") { pending.replaceChildren(el("b", {}, `Q: ${question}`), el("div", { html: job.result.html })); (s.qa ||= []).push(job.result); }
+    else pending.replaceChildren(el("b", {}, `Q: ${question}`), el("p", {}, job.error || "Stopped."));
+  };
+  input.addEventListener("keydown", (e) => e.key === "Enter" && ask());
+  const reuse = (tool) => {
+    studyState.tool = tool;
+    $("#st-text").value = s.markdown;
+    $("#st-topic").value = $("#st-topic").value || s.title;
+    $("#st-files").checked = false;
+    saveStudy(); renderStudyForm();
+    toast(`Notes added as the source. Click “${TOOL_LABELS[tool]}”.`);
+  };
+  return el("div", { class: "study-view" },
+    el("div", { class: "actions" },
+      el("button", { class: "btn small", type: "button", onclick: () => reuse("flashcards") }, "🃏 Flashcards from these"),
+      el("button", { class: "btn small", type: "button", onclick: () => reuse("quiz") }, "⏱️ Quiz from these"),
+      el("button", { class: "btn small", type: "button", onclick: () => {
+        $("#src-text").value = s.markdown; $("#topic").value = $("#topic").value || s.title;
+        saveBuilder(); updateSources(); showView("create"); toast("Notes added as an exam source.");
+      } }, "📄 Exam from these"),
+      el("button", { class: "btn small", type: "button", onclick: async () => {
+        try { await navigator.clipboard.writeText(s.markdown); toast("Copied."); } catch { toast("Copy failed."); }
+      } }, "Copy"),
+      el("button", { class: "btn small", type: "button", onclick: () => printNode(sheet) }, "Print")),
+    sheet,
+    el("h3", {}, "Ask about these notes"), el("div", { class: "ask-box" }, input, el("button", { class: "btn primary", type: "button", onclick: ask }, "Ask")), qa);
+}
+
+function printNode(node) {
+  const w = window.open("", "_blank");
+  if (!w) return toast("Allow pop-ups to print.");
+  w.document.write(`<!doctype html><meta charset="utf-8"><title>${escapeHtml(studyState.set.title)}</title>
+    <style>body{font:15px/1.55 Georgia,"Noto Serif SC",serif;max-width:760px;margin:24px auto;color:#111}
+    h1,h2{color:#1f3f7a}h2{border-bottom:1.5px solid #1f3f7a}blockquote{background:#f2f3f5;border:1px solid #c5cad3;margin:8px 0;padding:8px 12px}
+    table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccc;padding:4px 6px;text-align:left}</style>${node.innerHTML}`);
+  w.document.close();
+  w.focus();
+  w.print();
+}
+
+function mindmap(sheet) {
+  const root = sheet.querySelector("ul > li");
+  if (!root) return;
+  const title = root.childNodes[0]?.textContent.trim() || studyState.set.title;
+  const colours = ["#4f46e5", "#0891b2", "#16a34a", "#d97706", "#db2777", "#7c3aed", "#dc2626", "#0d9488"];
+  const branches = [...(root.querySelector(":scope > ul")?.children || [])].map((li, i) =>
+    el("div", { class: "mm-branch", style: `--b:${colours[i % colours.length]}` },
+      el("b", {}, li.childNodes[0]?.textContent.trim() || ""),
+      li.querySelector("ul") ? el("ul", { html: li.querySelector("ul").innerHTML }) : null));
+  sheet.replaceChildren(el("div", { class: "mindmap" }, el("div", { class: "mm-root" }, title), el("div", { class: "mm-branches" }, branches)));
+}
+
+// Flashcards (also used to practise vocabulary)
+function renderFlashcards(s, cards = s.cards) {
+  const fc = studyState.fc = { cards: [...cards], i: 0, known: 0, learning: 0, flipped: false };
+  const wrap = el("div", { class: "fc-stage" });
+  const draw = () => {
+    const c = fc.cards[fc.i];
+    const card = el("button", { class: `flashcard${fc.flipped ? " flipped" : ""}`, type: "button", "aria-label": "Flip card",
+      onclick: () => { fc.flipped = !fc.flipped; card.classList.toggle("flipped", fc.flipped); } },
+      el("div", { class: "fc-inner" },
+        el("div", { class: "fc-face fc-front" }, el("span", { class: "fc-label" }, "Front"), el("div", { html: fmt(c.front) })),
+        el("div", { class: "fc-face fc-back" }, el("span", { class: "fc-label" }, "Back"), el("div", { html: fmt(c.back) }))));
+    const go = (d) => { fc.i = (fc.i + d + fc.cards.length) % fc.cards.length; fc.flipped = false; draw(); };
+    const mark = (known) => { known ? fc.known++ : fc.learning++; if (!known) fc.cards.push(c); go(1); };
+    wrap.replaceChildren(card,
+      el("div", { class: "fc-controls" },
+        el("button", { class: "btn", type: "button", onclick: () => go(-1) }, "←"),
+        el("span", { class: "fc-count" }, `${fc.i + 1} / ${fc.cards.length}`),
+        el("button", { class: "btn", type: "button", onclick: () => go(1) }, "→")),
+      el("div", { class: "fc-controls" },
+        el("button", { class: "btn", type: "button", onclick: () => mark(false) }, "😕 Still learning"),
+        el("button", { class: "btn primary", type: "button", onclick: () => mark(true) }, "✅ I knew it"),
+        el("button", { class: "btn ghost", type: "button", onclick: () => { fc.cards.sort(() => Math.random() - 0.5); fc.i = 0; fc.flipped = false; draw(); } }, "🔀 Shuffle")),
+      el("p", { class: "fc-score" }, `Knew ${fc.known} · still learning ${fc.learning} · Space flips, ← → move`));
+  };
+  draw();
+  const all = el("details", {}, el("summary", {}, "All cards"),
+    el("div", { class: "fc-grid" }, cards.map((c) => el("div", {}, el("b", { html: fmt(c.front) }), el("span", { html: fmt(c.back) })))));
+  return el("div", { class: "study-view" }, wrap, all);
+}
+
+document.addEventListener("keydown", (e) => {
+  if ($("#view-study").hidden || !studyState.fc || !document.querySelector(".flashcard") || /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName)) return;
+  if (e.key === " ") { e.preventDefault(); document.querySelector(".flashcard").click(); }
+  if (e.key === "ArrowRight") document.querySelector(".fc-controls .btn:last-child")?.click();
+  if (e.key === "ArrowLeft") document.querySelector(".fc-controls .btn:first-child")?.click();
+});
+
+// Vocabulary
+function renderVocab(s) {
+  const lang = state.meta.languages.find((l) => l.id === s.translate_to);
+  const table = el("table", { class: "vocab-table" },
+    el("tr", {}, ["Word", "Meaning", "Example", lang && `In ${lang.label}`, "Synonyms"].filter(Boolean).map((h) => el("th", {}, h))),
+    s.words.map((w) => el("tr", {},
+      el("td", {}, w.word, el("div", { class: "pos" }, w.part_of_speech)),
+      el("td", {}, w.meaning), el("td", {}, el("em", {}, w.example)),
+      lang && el("td", {}, w.translation), el("td", {}, (w.synonyms || []).join(", ")))));
+  return el("div", { class: "study-view" },
+    el("div", { class: "actions" }, el("button", { class: "btn primary small", type: "button", onclick: () => {
+      const cards = s.words.map((w) => ({ front: w.word, back: `(${w.part_of_speech}) ${w.meaning}${w.translation ? `\n${w.translation}` : ""}${w.example ? `\n\n“${w.example}”` : ""}` }));
+      $("#study-view").replaceChildren($("#study-view").firstChild, renderFlashcards(s, cards));
+    } }, "🃏 Practise as flashcards")),
+    el("div", { class: "table-wrap" }, table));
+}
+
+// Quiz and grammar runner
+function renderQuizStart(s) {
+  const best = store.get(`best:${s.id}`, null);
+  const n = s.items.length;
+  const limit = el("select", { "aria-label": "Time limit" },
+    el("option", { value: "0" }, "No time limit"),
+    [5, 10, 15, 20, 30, 45, 60].map((m) => el("option", { value: m, selected: m === Math.max(5, Math.ceil(n * (s.kind === "quiz" ? 1 : 0.75) / 5) * 5) }, `${m} minutes`)));
+  return el("div", { class: "quiz-start" },
+    el("p", {}, `${plural(n, "question")}`, s.kind === "grammar" ? ` · ${state.meta.study.grammar_tests[s.test]}` : "",
+      best ? ` · your best: ${best.score}/${best.total}` : ""),
+    el("label", { class: "field" }, "Time limit", limit),
+    el("p", { class: "hint" }, s.kind === "grammar" && s.test === "ms_error"
+      ? "Pilih bahagian (A, B, C atau D) yang mengandungi kesalahan."
+      : s.kind === "grammar" ? "Type the correct form of the word in each gap." : "Choose one answer for each question."),
+    el("button", { class: "btn primary big", type: "button", style: "max-width:260px", onclick: () => startQuiz(s, Number(limit.value)) }, "Start"));
+}
+
+function startQuiz(s, minutes, items = s.items) {
+  clearInterval(studyState.quiz?.timer);
+  const q = studyState.quiz = { s, items, i: 0, answers: items.map(() => null), minutes, started: Date.now(), done: false };
+  if (minutes) q.timer = setInterval(() => {
+    const left = minutes * 60 - Math.floor((Date.now() - q.started) / 1000);
+    const t = $("#quiz-timer");
+    if (t) { t.textContent = clock(Math.max(left, 0)); t.classList.toggle("low", left <= 60); }
+    if (left <= 0) { toast("Time's up!"); finishQuiz(); }
+  }, 500);
+  else q.timer = setInterval(() => { const t = $("#quiz-timer"); if (t) t.textContent = clock(Math.floor((Date.now() - q.started) / 1000)); }, 1000);
+  drawQuiz();
+}
+
+const clock = (sec) => `${String(Math.floor(sec / 60)).padStart(2, "0")}:${String(sec % 60).padStart(2, "0")}`;
+
+function itemView(item, answer, onAnswer, review) {
+  if (item.type === "mcq") {
+    return el("div", { class: "quiz-q" }, el("div", { class: "qtext", html: fmt(item.question) }),
+      item.options.map((o, i) => el("button", { type: "button", disabled: review,
+        class: `choice${answer === i ? " selected" : ""}${review && i === item.answer ? " right" : ""}${review && answer === i && i !== item.answer ? " wrong" : ""}`,
+        onclick: () => onAnswer(i) }, el("b", {}, letter(i)), el("span", { html: fmt(o) }))));
+  }
+  if (item.type === "error") {
+    return el("div", { class: "quiz-q" }, el("div", { class: "segments" }, item.segments.map((seg, i) =>
+      el("button", { type: "button", disabled: review,
+        class: `segment${answer === i ? " selected" : ""}${review && i === item.answer ? " right" : ""}${review && answer === i && i !== item.answer ? " wrong" : ""}`,
+        onclick: () => onAnswer(i) }, seg, el("sup", {}, letter(i))), " ")));
+  }
+  const [before, after] = item.sentence.split(/_{3,}/);
+  const input = el("input", { class: "fill-input", value: answer ?? "", disabled: review, "aria-label": "Your answer",
+    oninput: (e) => onAnswer(e.target.value) });
+  return el("div", { class: "quiz-q" }, el("div", { class: "qtext" }, before, input, after ?? ""));
+}
+
+const norm = (t) => String(t ?? "").toLowerCase().replace(/[’']/g, "'").replace(/[.,!?;:"]+$/g, "").replace(/\s+/g, " ").trim();
+function isRight(item, answer) {
+  if (answer == null || answer === "") return false;
+  if (item.type === "fill") return [item.answer, ...(item.alternatives || [])].some((a) => norm(a) === norm(answer));
+  return answer === item.answer;
+}
+
+function drawQuiz() {
+  const q = studyState.quiz;
+  const item = q.items[q.i];
+  const palette = el("div", { class: "palette" }, q.items.map((_, i) => el("button", { type: "button",
+    class: `${q.answers[i] != null && q.answers[i] !== "" ? "done" : ""}${i === q.i ? " current" : ""}`,
+    onclick: () => { q.i = i; drawQuiz(); } }, i + 1)));
+  const view = itemView(item, q.answers[q.i], (a) => {
+    q.answers[q.i] = a;
+    if (item.type !== "fill") { drawQuiz(); }
+    else palette.children[q.i].classList.toggle("done", a !== "");
+  }, false);
+  $("#study-view").replaceChildren($("#study-view").firstChild,
+    el("div", { class: "quiz-bar" },
+      el("b", {}, `Question ${q.i + 1} of ${q.items.length}`),
+      el("span", { class: "timer", id: "quiz-timer" }, q.minutes ? clock(q.minutes * 60) : "00:00"),
+      el("button", { class: "btn primary", type: "button", onclick: () => {
+        const left = q.answers.filter((a) => a == null || a === "").length;
+        if (!left || confirm(`${plural(left, "question")} not answered. Finish anyway?`)) finishQuiz();
+      } }, "Finish")),
+    palette, view,
+    el("div", { class: "quiz-nav" },
+      el("button", { class: "btn", type: "button", disabled: q.i === 0, onclick: () => { q.i--; drawQuiz(); } }, "← Previous"),
+      el("button", { class: "btn", type: "button", disabled: q.i === q.items.length - 1, onclick: () => { q.i++; drawQuiz(); } }, "Next →")));
+  view.querySelector("input")?.focus();
+}
+
+function finishQuiz() {
+  const q = studyState.quiz;
+  if (!q || q.done) return;
+  q.done = true;
+  clearInterval(q.timer);
+  const used = Math.floor((Date.now() - q.started) / 1000);
+  const right = q.items.filter((it, i) => isRight(it, q.answers[i])).length;
+  const total = q.items.length;
+  const best = store.get(`best:${q.s.id}`, null);
+  if (q.items === q.s.items && (!best || right > best.score)) store.set(`best:${q.s.id}`, { score: right, total });
+  const pct = Math.round((right / total) * 100);
+  const wrong = q.items.filter((it, i) => !isRight(it, q.answers[i]));
+  const key = (it) => it.type === "mcq" ? `${letter(it.answer)}. ${it.options[it.answer]}` : it.type === "error" ? `${letter(it.answer)} → ${it.correction}` : it.answer;
+  const shown = (it, a) => a == null || a === "" ? "no answer" : it.type === "mcq" ? `${letter(a)}. ${it.options[a]}` : it.type === "error" ? letter(a) : a;
+  $("#study-view").replaceChildren($("#study-view").firstChild,
+    el("div", { class: "score" },
+      el("div", { class: "score-ring", style: `--p:${pct}` }, el("span", {}, `${pct}%`)),
+      el("div", {}, el("h2", {}, `${right} / ${total} correct`), el("p", { class: "muted" }, `Time: ${clock(used)}${q.minutes ? ` of ${q.minutes}:00` : ""}`)),
+      el("div", { class: "actions" },
+        el("button", { class: "btn", type: "button", onclick: () => startQuiz(q.s, q.minutes) }, "Try again"),
+        wrong.length > 0 && el("button", { class: "btn primary", type: "button", onclick: () => startQuiz(q.s, q.minutes ? Math.max(1, Math.ceil(wrong.length * q.minutes / total)) : 0, wrong) }, `Practise the ${wrong.length} wrong`))),
+    el("div", { class: "review" }, q.items.map((it, i) => {
+      const ok = isRight(it, q.answers[i]);
+      return el("div", { class: "qcard" },
+        el("div", { class: "qhead" }, el("span", { class: "qnum" }, `Q${i + 1}`),
+          el("span", { class: `tag ${ok ? "verified" : "flagged"}` }, ok ? "✓ Correct" : "✗ Wrong"),
+          it.checked && el("span", { class: "tag" }, it.checked === "corrected" ? "✎ Key corrected by double-check" : "✓ Double-checked")),
+        itemView(it, q.answers[i], () => {}, true),
+        !ok && el("div", { class: "your" }, `Your answer: ${shown(it, q.answers[i])} · Correct: `, el("b", {}, key(it))),
+        it.explanation && el("div", { class: "explain", html: fmt(it.explanation) }));
+    })));
 }
 
 // ---------- Generic job polling ---------------------------------------------------------
@@ -1127,8 +1499,10 @@ async function init() {
   renderPlan();
   renderDifficulty();
   renderConvert();
+  initStudy();
   await Promise.all([loadLibrary(), loadExams(), checkStatus()]);
-  api("/api/jobs/current").then((job) => job && followJob(job)).catch(() => {});
+  // Pick up an exam or analysis that was already running (e.g. after a page refresh).
+  api("/api/jobs/current").then((job) => job && ["generate", "analyse"].includes(job.kind) && followJob(job)).catch(() => {});
 }
 
 init();

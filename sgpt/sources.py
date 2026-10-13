@@ -317,6 +317,10 @@ def gather_sources(*, folder: Path | None = None, text: str = "", urls: list[str
                 raise SourceError("Add some sources, or type a topic so it can be searched online.")
         else:
             step(f"Searching the internet for “{topic}”")
-            sources += web_search(topic, engine=engine, api_key=engine_key, language=language,
-                                  warn=warn)
+            try:
+                sources += web_search(topic, engine=engine, api_key=engine_key, language=language,
+                                      warn=warn)
+            except SourceError as exc:
+                # Not fatal: the AI can still write from its own knowledge of the topic.
+                warn(f"{exc} Continuing with the AI's own knowledge of “{topic}”.")
     return sources

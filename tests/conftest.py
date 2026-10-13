@@ -59,6 +59,43 @@ def fake_reply(system: str, prompt: str) -> str:
              "marks": 1 if mcq else 3, "question": f"Solve 2x + {i} = 9 for x.",
              "options": ["A. 1", "B) 2", "3.5", "4"] if mcq else [], "parts": []}
             for i in range(1, count + 1)]})
+    if "strict independent examiner checking test items" in system:
+        items = json.loads(prompt.split("ITEMS:\n", 1)[1])
+        # Pretend item 1's key was wrong and item 2 is broken.
+        return json.dumps({"checks": [
+            {"n": it["n"], "ok": it["n"] != 2,
+             "answer": (1 if isinstance(it.get("answer"), int) else "fixed") if it["n"] == 1 else it.get("answer")}
+            for it in items]})
+    if "expert teacher" in system or "exam study guides" in system:
+        n = int((re.search(r"(?:Make|Write) (\d+)", prompt) or re.search(r"Tulis (\d+)", prompt) or [0, 3])[1])
+        if "flashcards" in prompt:
+            return json.dumps({"cards": [{"front": f"Term {i}", "back": f"Meaning {i}"} for i in range(n)]})
+        if "multiple-choice" in prompt:
+            return json.dumps({"questions": [{"question": f"Q{i}?", "options": ["a", "b", "c", "d"],
+                                              "answer": 2, "explanation": "because"} for i in range(n)]})
+        if "TENSES" in prompt or "WORD FORM" in prompt:
+            return json.dumps({"items": [{"sentence": f"She _____ (go) home {i}.", "base": "go",
+                                          "answer": "went", "explanation": "past"} for i in range(n)]})
+        if "KENAL PASTI" in prompt:
+            return json.dumps({"items": [{"segments": ["Para pelajar", "sedang", "pelajaran-pelajaran", "itu."],
+                                          "error_index": 2, "correction": "pelajaran", "explanation": "jamak"}
+                                         for _ in range(n)]})
+        if prompt.startswith("Explain"):
+            words = re.search(r"these words: (.*?)\. Level", prompt)
+            names = words.group(1).split(", ") if words else ["photosynthesis", "chlorophyll"]
+            return json.dumps({"words": [{"word": w, "part_of_speech": "noun", "meaning": f"meaning of {w}",
+                                          "example": f"I like {w}.", "translation": "翻译", "synonyms": ["x"]}
+                                         for w in names]})
+        if "List the chapters" in prompt:
+            return json.dumps({"chapters": ["Algebra", "Geometry"]})
+        if "memorise" in prompt:
+            return "### Formulas\n- a² + b² = c²"
+        if "study-guide section" in prompt:
+            chapter = re.search(r"chapter \d+: (.*?) \(", prompt).group(1)
+            return f"> key fact about {chapter}\n> second fact\n\n- Trap: careless slips"
+        if "Answer the student's question" in prompt:
+            return "Chlorophyll absorbs **light**."
+        return "# Photosynthesis\n\n## Key terms\n\n| Term | Definition | Example |\n|---|---|---|\n| Glucose | sugar | — |\n\n- Light → glucose"
     if "knows the syllabus" in system:
         return json.dumps({"chapters": ["Algebra", "Geometry"]})
     if "sorting past exam questions" in system:

@@ -176,6 +176,14 @@ def test_gather_sources_searches_only_when_nothing_else(monkeypatch, tmp_path):
     with pytest.raises(sources.SourceError):
         sources.gather_sources(topic="")
 
+    def offline(q, **k):
+        raise sources.SourceError("No web results could be read.")
+
+    monkeypatch.setattr(sources, "web_search", offline)
+    warnings = []
+    assert sources.gather_sources(topic="cells", warn=warnings.append) == []
+    assert "AI's own knowledge" in warnings[0]
+
 
 def test_render_markdown_parts():
     exam = {"title": "T", "duration_minutes": 30, "instructions": ["Answer all."],

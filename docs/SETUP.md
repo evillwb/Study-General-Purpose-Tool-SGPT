@@ -78,6 +78,13 @@ Choose the **exam language** (English, 中文, Bahasa Melayu) and the language y
 numbering such as `Soalan 1`, `第1题`, `2．`, `(5 markah)` and `（5分）` is recognised in
 past papers.
 
+## 5. Converting files (optional: LibreOffice)
+
+PDF, Word (`.docx`), images, Markdown, text and HTML convert with nothing extra
+installed. To convert old Word files (`.doc`, `.rtf`, `.odt`), PowerPoint and Excel, and
+to get the most faithful Word → PDF layout, install the free
+[LibreOffice](https://www.libreoffice.org/download/). SGPT finds it automatically.
+
 ## Troubleshooting
 
 | Problem | Fix |
@@ -91,3 +98,5 @@ past papers.
 | Questions are wrong or repetitive | Use a bigger model, add better sources, lower *Creativity*, or add instructions under *More options*. |
 | Very slow on Ollama | Normal on a CPU (10–30 minutes). Choose fewer questions, a smaller *Context size*, or a GPU or cloud model. |
 | Port already in use | `python -m sgpt.app --port 8800` |
+| "Converting .doc files needs LibreOffice" | Install LibreOffice (see section 5), or save the file as `.docx` first. |
+| Internet search is blocked | SGPT carries on with the AI's own knowledge and shows a warning. Add your own sources for better results. |
