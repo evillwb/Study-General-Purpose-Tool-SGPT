@@ -4,8 +4,11 @@ Keep the {placeholders}. Literal braces in JSON examples are written as {{ }}.
 """
 
 PLAIN_MATHS = (
-    "Write maths as plain text that reads well anywhere, not LaTeX: use x², √, ×, ÷, π, ≤, "
-    "fractions like 3/4, and brackets; never use $...$ or backslash commands."
+    "Write simple maths as plain text (x², ×, ÷, π, ≤, 3/4). For anything harder to read in "
+    "plain text (fractions of expressions, roots, powers of expressions, integrals, sums, "
+    "vectors) use LaTeX between single dollar signs, e.g. $\\frac{3x+1}{2}$, $\\sqrt{b^2-4ac}$, "
+    "$\\int_0^2 x^2\\,dx$. Never use $$, \\begin{...} environments or matrices. Inside JSON, "
+    "write every backslash twice."
 )
 
 # --- Past-paper analysis ----------------------------------------------------------------
@@ -99,14 +102,15 @@ Reply with JSON in exactly this shape:
       "marks": 4,
       "question": "the question text (for fill_blank, show the gap as _____)",
       "options": ["option text", "option text", "option text", "option text"],
-      "parts": [{{"label": "a", "text": "part question", "marks": 2}}]
+      "parts": [{{"label": "a", "text": "part question", "marks": 2}}],
+      "diagram": null
     }}
   ]
 }}
 Rules:
 - "options" only for mcq (exactly 4, no letters in the text, one clearly correct answer)
   and true_false (["True", "False"]); otherwise [].
-- "parts" only when the question has sub-parts (a), (b)...; their marks must add up to "marks".
+- "parts" only when the question has sub-parts (a), (b)...; their marks must add up to "marks".{diagram_rule}
 - Do NOT include answers."""
 
 # --- Answers and marking scheme ------------------------------------------------------

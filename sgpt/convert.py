@@ -256,14 +256,27 @@ def html_to_pdf(page_html: str, out: Path, header: str = "", images_dir: Path | 
     return out
 
 
-_INLINE = re.compile(r"(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)")
+_INLINE = re.compile(r"(!\[[^\]]*\]\([^)\s]+\)|\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`)")
+_INLINE_IMG = re.compile(r"^!\[([^\]]*)\]\(([^)\s]+)\)$")
 
 
-def _add_runs(paragraph, text: str) -> None:
+def _add_runs(paragraph, text: str, images_dir: Path | None = None) -> None:
     for piece in _INLINE.split(text):
         if not piece:
             continue
-        if piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
+        picture = _INLINE_IMG.match(piece)
+        if picture:  # a formula drawn as a picture, inside the line
+            path = images_dir / picture.group(2) if images_dir else None
+            if path and path.is_file():
+                import pymupdf
+                from docx.shared import Pt
+
+                with pymupdf.open(path) as img:
+                    height = img[0].rect.height / 2
+                paragraph.add_run().add_picture(str(path), height=Pt(min(height, 60)))
+            else:
+                paragraph.add_run(picture.group(1))
+        elif piece.startswith("**") and piece.endswith("**") and len(piece) > 4:
             paragraph.add_run(piece[2:-2]).bold = True
         elif piece.startswith("`") and piece.endswith("`"):
             paragraph.add_run(piece[1:-1]).font.name = "Consolas"
@@ -300,7 +313,7 @@ def markdown_to_docx(text: str, out: Path, title: str = "", images_dir: Path | N
             table.style = "Table Grid"
             for r, row in enumerate(rows):
                 for c, cell in enumerate(row):
-                    _add_runs(table.cell(r, c).paragraphs[0], cell)
+                    _add_runs(table.cell(r, c).paragraphs[0], cell, images_dir)
             continue
         picture = _MD_IMG.match(stripped)
         if picture and images_dir and (images_dir / picture.group(2)).is_file():
@@ -317,12 +330,12 @@ def markdown_to_docx(text: str, out: Path, title: str = "", images_dir: Path | N
             level = min(len(heading.group(1)), 4)
             doc.add_heading(re.sub(r"\*\*(.+?)\*\*", r"\1", heading.group(2)), level=level - 1 if level > 1 else 0)
         elif re.match(r"^[-*+]\s+", stripped):
-            _add_runs(doc.add_paragraph(style="List Bullet"), re.sub(r"^[-*+]\s+", "", stripped))
+            _add_runs(doc.add_paragraph(style="List Bullet"), re.sub(r"^[-*+]\s+", "", stripped), images_dir)
         elif re.match(r"^\d+[.)]\s+", stripped):
-            _add_runs(doc.add_paragraph(style="List Number"), re.sub(r"^\d+[.)]\s+", "", stripped))
+            _add_runs(doc.add_paragraph(style="List Number"), re.sub(r"^\d+[.)]\s+", "", stripped), images_dir)
         elif stripped.startswith(">"):
             p = doc.add_paragraph(style="Quote")
-            _add_runs(p, stripped.lstrip("> "))
+            _add_runs(p, stripped.lstrip("> "), images_dir)
         else:
             # Join hard-wrapped lines ("  " at the end) into one paragraph with line breaks.
             p = doc.add_paragraph()
@@ -334,7 +347,7 @@ def markdown_to_docx(text: str, out: Path, title: str = "", images_dir: Path | N
             for n, part in enumerate(parts):
                 if n:
                     p.add_run().add_break()
-                _add_runs(p, part)
+                _add_runs(p, part, images_dir)
         i += 1
     doc.save(out)
     return out

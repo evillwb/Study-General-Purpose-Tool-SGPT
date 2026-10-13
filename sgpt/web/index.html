@@ -87,6 +87,8 @@
 
       <section class="panel">
         <h2 class="panel-title"><span class="step">3</span>Questions</h2>
+        <label class="field">Exam format
+          <select id="template"><option value="">Custom (choose below)</option></select></label>
         <div class="segmented" role="radiogroup" aria-label="Paper structure">
           <label><input type="radio" name="structure" value="custom" checked><span>Choose question types</span></label>
           <label id="match-option"><input type="radio" name="structure" value="match"><span>Match my past papers</span></label>
@@ -112,6 +114,8 @@
           <input id="challenge" type="range" min="-2" max="2" step="1" value="0" list="challenge-ticks">
           <span class="ticks"><span>Much easier</span><span>Normal</span><span>Much harder</span></span>
         </label>
+        <label class="check strong"><input id="diagrams" type="checkbox" checked>
+          <span><b>Add diagrams and graphs</b><small>Graphs, charts, triangles and number lines where a question needs one.</small></span></label>
         <label class="check strong"><input id="verify" type="checkbox" checked>
           <span><b>Double-check every answer</b><small>The AI re-solves each question to catch mistakes. Slower, more accurate.</small></span></label>
         <details class="more">
@@ -178,6 +182,7 @@
                 <span>Model answers</span><a data-part="answers" data-format="docx">.docx</a><a data-part="answers" data-format="pdf">.pdf</a><a data-part="answers" data-format="md">.md</a>
                 <span>Marking scheme</span><a data-part="scheme" data-format="docx">.docx</a><a data-part="scheme" data-format="pdf">.pdf</a><a data-part="scheme" data-format="md">.md</a>
                 <span>Everything</span><a data-part="all" data-format="docx">.docx</a><a data-part="all" data-format="pdf">.pdf</a><a data-part="all" data-format="md">.md</a>
+                <span>Quiz apps</span><a data-part="all" data-format="kahoot" title="Multiple-choice questions, for Kahoot!: Add question → Import spreadsheet">Kahoot</a><a data-part="all" data-format="quizlet" title="Question and answer pairs, for Quizlet: Create → Import → paste">Quizlet</a><span></span>
                 <button id="copy" type="button">Copy everything as Markdown</button>
               </div>
             </div>

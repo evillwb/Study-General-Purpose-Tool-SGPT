@@ -17,7 +17,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from . import i18n, prompts
+from . import figures, i18n, prompts
 from .ollama_client import parse_json
 from .pdf_extract import ExamPaper
 from .sources import Source, source_languages
@@ -71,6 +71,26 @@ NOTES_LIMIT = 10000
 NOTE_PARTS = 4  # chunks read from each notes source, spread over the whole file
 
 
+# Common exam formats: a starting point for the question plan (approximate; the exact
+# format depends on the subject and year, so check your syllabus).
+EXAM_TEMPLATES = {
+    "spm_p1": {"label": "SPM · Paper 1 (objective)", "level": "SPM (Form 5)", "minutes": 75,
+               "plan": [("mcq", 40, 1)]},
+    "spm_p2": {"label": "SPM · Paper 2 (Sections A, B, C)", "level": "SPM (Form 5)", "minutes": 150,
+               "plan": [("short", 4, 4), ("structured", 6, 8), ("essay", 2, 10)]},
+    "uec_junior": {"label": "UEC Junior Middle (统考初中)", "level": "UEC Junior Middle 3", "minutes": 120,
+                   "plan": [("mcq", 30, 2), ("structured", 4, 10)]},
+    "uec_senior": {"label": "UEC Senior Middle (统考高中)", "level": "UEC Senior Middle 3", "minutes": 150,
+                   "plan": [("mcq", 20, 2), ("structured", 6, 10)]},
+    "igcse_p1": {"label": "IGCSE · Multiple choice paper", "level": "IGCSE", "minutes": 45,
+                 "plan": [("mcq", 40, 1)]},
+    "igcse_p2": {"label": "IGCSE · Structured paper (Extended)", "level": "IGCSE (Extended)", "minutes": 90,
+                 "plan": [("short", 12, 3), ("structured", 4, 9)]},
+    "stpm": {"label": "STPM · Sections A, B, C", "level": "STPM (Form 6)", "minutes": 90,
+             "plan": [("mcq", 15, 1), ("structured", 2, 15), ("essay", 2, 15)]},
+}
+
+
 class Progress:
     """Receives progress updates. The CLI prints them; the web app shows them in the UI."""
 
@@ -102,6 +122,7 @@ class ExamRequest:
     challenge: int = 0              # -2 (much easier) … +2 (much harder), on top of the mix
     analysis: dict | None = None    # a saved past-paper analysis, so it is not redone
     verify: bool = True             # have the AI double-check every question and answer
+    diagrams: bool = True           # let the AI add graphs, charts and shapes to questions
 
 
 # --- Helpers -----------------------------------------------------------------------------
@@ -122,7 +143,7 @@ def _as_list(value) -> list[str]:
 
 
 def _text(value) -> str:
-    return str(value).strip() if value is not None else ""
+    return figures.repair_math(str(value).strip()) if value is not None else ""
 
 
 class _Steps:
@@ -372,6 +393,7 @@ def normalise_question(data: dict, want_type: str | None, want_marks: int | None
         "options": options,
         "parts": parts,
         "answer": "", "final_answer": "", "marking_points": [], "accept": "",
+        "diagram": figures.clean_diagram(data.get("diagram")),
     }
 
 
@@ -423,6 +445,7 @@ def _context(request: ExamRequest, info: dict, notes: str, papers: list[Source],
                  if request.instructions else "",
         "language": i18n.lang(request.language),
         "source_language": request.source_language,
+        "diagrams": request.diagrams,
     }
 
 
@@ -437,6 +460,7 @@ def write_questions(client, ctx: dict, batch: dict, avoid: list[str], rng: rando
         count=batch["count"], items=items, topics=", ".join(topics[:15]),
         avoid=("\nDo not repeat these existing questions:\n- "
                + "\n- ".join(a[:150] for a in avoid[-15:]) + "\n") if avoid else "",
+        diagram_rule=figures.DIAGRAM_PROMPT if ctx.get("diagrams", True) else "",
         **{k: ctx[k] for k in ("level", "subject", "topic", "difficulty", "style", "examples",
                                "notes", "extra")})
     for _ in range(2):
@@ -833,6 +857,8 @@ def _br(text: str) -> str:
 
 def _paper_question(q: dict) -> list[str]:
     out = [f"**{q['number']}.** {_br(q['question'])} **[{q['marks']}]**", ""]
+    if q.get("diagram"):
+        out += [f"![Diagram for question {q['number']}](diagram-{q['number']}.png)", ""]
     if q["options"]:
         out += ["  \n".join(f"{chr(65 + i)}. {o}" for i, o in enumerate(q["options"])), ""]
     for p in q["parts"]:

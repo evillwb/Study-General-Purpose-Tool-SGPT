@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 import shutil
+import tempfile
 import threading
 import time
 import uuid
@@ -21,11 +22,11 @@ from urllib.parse import quote
 import markdown as md
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 
-from .generator import (DEFAULT_PLAN, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
+from .generator import (DEFAULT_PLAN, EXAM_TEMPLATES, DIFFICULTY_MIX, DIFFICULTY_TEXT, QUESTION_TYPES,
                         ExamRequest, Progress, analyse_papers, generate_exam,
                         regenerate_question, render_markdown, renumber)
 from . import bank as qbank
-from . import convert, media, ocr, study
+from . import convert, figures, media, ocr, quizapps, study
 from .i18n import LANGUAGES
 from .ollama_client import Cancelled, LLMError
 from .providers import (PROVIDERS, SEARCH_ENGINES, config_path, make_client, mask_key,
@@ -49,10 +50,29 @@ def _safe_filename(name: str) -> str:
     return name
 
 
-def render_html(text: str) -> str:
+def render_html(text: str, figure_base: str = "") -> str:
+    """Markdown -> HTML for the app. Formulas ($...$) become pictures; diagram pictures are
+    served from figure_base (an exam's figure URL)."""
     # Escape raw HTML tags the model might emit; Markdown formatting is unaffected.
     text = re.sub(r"<(?=[A-Za-z/!])", "&lt;", text)
-    return md.markdown(convert.keep_box_lines(text), extensions=["extra", "sane_lists"])
+    formulas: list[str] = []
+
+    def keep(m):  # protect LaTeX from Markdown (underscores, backslashes)
+        formulas.append(m.group(1))
+        return f"\u2063MATH{len(formulas) - 1}\u2063"
+    text = figures.MATH.sub(keep, text)
+    if figure_base:
+        text = re.sub(r"\]\((diagram-\d+)\.png\)", lambda m: f"]({figure_base}{m.group(1)}.svg)", text)
+    else:
+        text = re.sub(r"!\[[^\]]*\]\(diagram-\d+\.png\)", "", text)
+    out = md.markdown(convert.keep_box_lines(text), extensions=["extra", "sane_lists"])
+    return re.sub("\u2063MATH(\\d+)\u2063", lambda m: math_tag(formulas[int(m.group(1))]), out)
+
+
+def math_tag(tex: str) -> str:
+    from html import escape
+    return (f'<img class="math" src="/api/math.svg?tex={quote(tex)}" alt="{escape(tex, quote=True)}">'
+            if figures.math_image(tex, "svg") else escape(figures.plain(tex)))
 
 
 class Job(Progress):
@@ -180,6 +200,9 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             question_types=[{"id": k, "label": v["label"], "marks": v["marks"]}
                             for k, v in QUESTION_TYPES.items()],
             default_plan=DEFAULT_PLAN,
+            exam_templates=[{"id": k, "label": v["label"], "level": v["level"], "minutes": v["minutes"],
+                             "plan": [{"type": t, "count": n, "marks": m} for t, n, m in v["plan"]]}
+                            for k, v in EXAM_TEMPLATES.items()],
             difficulties=list(DIFFICULTY_TEXT),
             difficulty_mix=DIFFICULTY_MIX,
             languages=[{"id": k, "label": v["label"]} for k, v in LANGUAGES.items()],
@@ -533,10 +556,27 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
 
         return start_job(Job("ask"), work)
 
+    def quiz_app_download(fmt: str, title: str, mcq: list[dict], pairs) -> Response:
+        """Kahoot spreadsheet or Quizlet import text."""
+        slug = quote(re.sub(r'[\\/:*?"<>|]+', "_", title).strip(" ._")[:60] or "quiz")
+        try:
+            if fmt == "kahoot":
+                data, _cut = quizapps.kahoot_xlsx(mcq, int(request.args.get("seconds") or 30))
+                return Response(data, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                headers={"Content-Disposition": f"attachment; filename*=UTF-8''{slug}%20(Kahoot).xlsx"})
+            text = quizapps.quizlet_text(pairs())
+        except ValueError as exc:
+            abort(400, str(exc))
+        return Response(text, mimetype="text/plain; charset=utf-8",
+                        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{slug}%20(Quizlet).txt"})
+
     @app.get("/api/study/<set_id>/export")
     def export_set(set_id):
         data = load_set(set_id)
         fmt = request.args.get("format", "md")
+        if fmt in ("kahoot", "quizlet"):
+            return quiz_app_download(fmt, data["title"], quizapps.mcq_from_study(data),
+                                     lambda: quizapps.pairs_from_study(data))
         if fmt == "csv":
             try:
                 text = study.as_csv(data)
@@ -569,7 +609,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         public = {k: v for k, v in exam.items() if k != "context"}
         return {**public,
                 "total_marks": sum(q["marks"] for q in exam["questions"]),
-                "html": {part: render_html(render_markdown(exam, part))
+                "html": {part: render_html(render_markdown(exam, part), f"/api/exams/{exam['id']}/figure/")
                          for part in ("paper", "answers", "scheme")}}
 
     @app.post("/api/generate")
@@ -585,6 +625,7 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
             difficulty_mix=s.get("difficulty_mix") if isinstance(s.get("difficulty_mix"), dict) else None,
             challenge=max(-2, min(2, int(s.get("challenge") or 0))),
             verify=s.get("verify") is not False,
+            diagrams=s.get("diagrams") is not False,
             instructions=(s.get("instructions") or "").strip(),
             duration_minutes=int(s["minutes"]) if str(s.get("minutes") or "").strip() else None,
             seed=seed,
@@ -986,10 +1027,41 @@ def create_app(library_dir: Path, output_dir: Path, ollama_host: str | None = No
         exam = load_exam(exam_id)
         part = request.args.get("part", "all")
         fmt = request.args.get("format", "md")
+        if fmt in ("kahoot", "quizlet"):
+            return quiz_app_download(fmt, exam["title"], quizapps.mcq_from_exam(exam),
+                                     lambda: quizapps.pairs_from_exam(exam))
         if part not in ("all", "paper", "answers", "scheme"):
             abort(400, "Unknown part")
         suffix = {"all": "", "paper": "_paper", "answers": "_answers", "scheme": "_marking_scheme"}
-        return download(render_markdown(exam, part), fmt, exam["title"], suffix[part])
+        text = render_markdown(exam, part)
+        if fmt not in ("pdf", "docx"):  # no pictures: formulas as plain text, diagrams left out
+            text = figures.markdown_plain_math(re.sub(r"!\[[^\]]*\]\(diagram-\d+\.png\)\n?", "", text))
+            return download(text, fmt, exam["title"], suffix[part])
+        with tempfile.TemporaryDirectory() as tmp:
+            for q in exam["questions"]:
+                if q.get("diagram"):
+                    try:
+                        (Path(tmp) / f"diagram-{q['number']}.png").write_bytes(figures.diagram_image(q["diagram"]))
+                    except Exception:  # noqa: BLE001 - a diagram that can't be drawn is left out
+                        pass
+            text = figures.markdown_with_math_images(text, Path(tmp))
+            return download(text, fmt, exam["title"], suffix[part], images_dir=Path(tmp))
+
+    @app.get("/api/exams/<exam_id>/figure/diagram-<int:number>.svg")
+    def exam_diagram(exam_id, number):
+        exam = load_exam(exam_id)
+        q = next((q for q in exam["questions"] if q["number"] == number and q.get("diagram")), None)
+        if not q:
+            abort(404, "No diagram")
+        return Response(figures.diagram_image(q["diagram"], "svg"), mimetype="image/svg+xml",
+                        headers={"Cache-Control": "no-cache"})
+
+    @app.get("/api/math.svg")
+    def math_svg():
+        svg = figures.math_image(request.args.get("tex", "")[:300], "svg")
+        if not svg:
+            abort(404, "Can't draw this formula")
+        return Response(svg, mimetype="image/svg+xml", headers={"Cache-Control": "max-age=86400"})
 
     @app.delete("/api/exams/<exam_id>")
     def delete_exam(exam_id):

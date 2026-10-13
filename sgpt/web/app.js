@@ -44,10 +44,18 @@ function el(tag, attrs = {}, ...children) {
 const escapeHtml = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 // Plain text from the AI -> safe HTML with **bold**, *italic* and line breaks.
-const fmt = (s) => escapeHtml(s)
-  .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-  .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
-  .replace(/\n/g, "<br>");
+// Formulas ($...$) are drawn on the server as SVG pictures.
+const MATH_RE = /\$(?!\s)([^$\n]{1,300}?)(?<!\s)\$/g;
+const mathImg = (tex) => `<img class="math" alt="${escapeHtml(tex)}" src="/api/math.svg?tex=${encodeURIComponent(tex)}" onerror="this.replaceWith(document.createTextNode(this.alt))">`;
+const fmt = (s) => {
+  const formulas = [];
+  const text = String(s ?? "").replace(MATH_RE, (_, tex) => `\u2063${formulas.push(tex) - 1}\u2063`);
+  return escapeHtml(text)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/\n/g, "<br>")
+    .replace(/\u2063(\d+)\u2063/g, (_, i) => mathImg(formulas[i]));
+};
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
 const letter = (i) => String.fromCharCode(65 + i);
 
@@ -205,6 +213,8 @@ function saveBuilder() {
   data.difficulty = $("input[name=difficulty]:checked").value;
   data.plan = state.plan;
   data.verify = $("#verify").checked;
+  data.diagrams = $("#diagrams").checked;
+  data.template = $("#template").value;
   data.mix = state.mix;
   store.set("builder", data);
 }
@@ -218,6 +228,8 @@ function loadBuilder() {
   }
   if (data.mix) state.mix = data.mix;
   if (data.verify === false) $("#verify").checked = false;
+  if (data.diagrams === false) $("#diagrams").checked = false;
+  if (data.template) $("#template").value = data.template;
   state.plan = {};
   const defaults = Object.fromEntries(state.meta.default_plan.map((p) => [p.type, p]));
   for (const t of state.meta.question_types) {
@@ -432,6 +444,19 @@ function updateSources() {
 }
 
 // ---------- Builder: question plan ------------------------------------------------
+function applyTemplate(id) {
+  const tpl = state.meta.exam_templates.find((t) => t.id === id);
+  if (!tpl) return saveBuilder();
+  for (const key of Object.keys(state.plan)) state.plan[key].count = 0;
+  for (const p of tpl.plan) state.plan[p.type] = { count: p.count, marks: p.marks };
+  $("input[name=structure][value=custom]").checked = true;
+  $("#minutes").value = tpl.minutes;
+  if (!$("#level").value.trim()) $("#level").value = tpl.level;
+  saveBuilder();
+  renderPlan();
+  toast(`${tpl.label}: ${tpl.plan.reduce((a, p) => a + p.count, 0)} questions, ${tpl.minutes} minutes. Check your syllabus for the exact format.`);
+}
+
 function renderPlan() {
   const match = $("input[name=structure]:checked").value === "match";
   $("#plan").hidden = match;
@@ -487,6 +512,7 @@ async function startGeneration() {
     difficulty: $("input[name=difficulty]:checked").value,
     difficulty_mix: currentMix(), challenge: Number($("#challenge").value),
     verify: $("#verify").checked,
+    diagrams: $("#diagrams").checked,
     instructions: $("#instructions").value, minutes: $("#minutes").value,
   };
   try { followJob(await api("/api/generate", { json: payload })); }
@@ -637,6 +663,8 @@ function questionCard(q) {
         { verified: "✓ Checked", corrected: "✎ Corrected by check", flagged: "⚠ Check failed" }[q.check]),
       el("span", { class: "qmarks" }, plural(q.marks, "mark"))),
     el("div", { class: "qtext", html: fmt(q.question) }),
+    q.diagram && el("img", { class: "diagram", alt: `Diagram for question ${q.number}`,
+      src: `/api/exams/${state.exam.id}/figure/diagram-${q.number}.svg` }),
     q.options.length > 0 && el("ul", { class: "options" }, q.options.map((o, i) =>
       el("li", { class: i === correct ? "correct" : "" }, el("b", {}, letter(i)), el("span", { html: fmt(o) })))),
     q.parts.length > 0 && el("ul", { class: "parts" }, q.parts.map((p) =>
@@ -930,7 +958,7 @@ async function openSet(id) {
 
 function exportButtons(set, formats) {
   return el("div", { class: "actions" }, formats.map((f) => el("a", { class: "btn small", href: `/api/study/${set.id}/export?format=${f}` },
-    { docx: "Word", pdf: "PDF", md: "Markdown", csv: "CSV (Anki)" }[f])));
+    { docx: "Word", pdf: "PDF", md: "Markdown", csv: "CSV (Anki)", kahoot: "Kahoot", quizlet: "Quizlet" }[f])));
 }
 
 function renderSet() {
@@ -939,7 +967,9 @@ function renderSet() {
     el("div", {}, el("h1", {}, s.title), el("div", { class: "chips" },
       [state.meta.study.kinds[s.kind], s.style && state.meta.study.note_styles[s.style], s.model && `AI: ${s.model}`]
         .filter(Boolean).map((c) => el("span", { class: "chip" }, c)))),
-    exportButtons(s, s.kind === "flashcards" || s.kind === "vocab" ? ["csv", "docx", "pdf", "md"] : ["docx", "pdf", "md"]));
+    exportButtons(s, s.kind === "flashcards" || s.kind === "vocab" ? ["csv", "quizlet", "docx", "pdf", "md"]
+      : s.kind === "quiz" || (s.kind === "grammar" && s.items?.some((it) => it.type === "mcq")) ? ["kahoot", "quizlet", "docx", "pdf", "md"]
+        : s.kind === "grammar" ? ["quizlet", "docx", "pdf", "md"] : ["docx", "pdf", "md"]));
   const body = { notes: renderNotes, flashcards: renderFlashcards, vocab: renderVocab, quiz: renderQuizStart, grammar: renderQuizStart }[s.kind](s);
   $("#study-view").replaceChildren(head, body);
 }
@@ -1685,6 +1715,7 @@ function wire() {
   $("#wipe-all").addEventListener("click", deleteAllData);
   initMedia();
   pollDock();
+  $("#template").addEventListener("change", (e) => applyTemplate(e.target.value));
   $$("[data-view-link]").forEach((b) => b.addEventListener("click", () => {
     showView(b.dataset.viewLink);
     if (!state.jobId) showStage("empty");
@@ -1788,6 +1819,7 @@ async function init() {
 
   $("#engine").replaceChildren(...state.meta.search.engines.map((e) => el("option", { value: e.id }, e.label)));
   $("#ocr-missing").hidden = Boolean(state.meta.ocr);
+  $("#template").append(...state.meta.exam_templates.map((t) => el("option", { value: t.id }, t.label)));
   loadBuilder();
   wire();
   wireSettings();

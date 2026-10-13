@@ -692,3 +692,10 @@ output { font-weight: 400; color: var(--text); }
 .media-sites { margin-top: 8px; font-size: 13px; }
 .media-sites summary { cursor: pointer; color: var(--accent); width: max-content; }
 .media-sites p { margin: 6px 0 0; line-height: 1.6; }
+
+/* Formulas and diagrams */
+img.math { vertical-align: middle; max-height: 4em; margin: 0 1px; }
+img.diagram, #sheet img[src*="/figure/"] { display: block; max-width: min(100%, 360px); margin: 8px 0;
+  background: #fff; border-radius: 8px; padding: 6px; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) img.math { filter: invert(1) hue-rotate(180deg); } }
+:root[data-theme="dark"] img.math { filter: invert(1) hue-rotate(180deg); }

@@ -13,7 +13,7 @@ datas = [(os.path.join(ROOT, "sgpt", "web"), "sgpt/web")]
 binaries = []
 hiddenimports = collect_submodules("sgpt") + collect_submodules("markdown")
 for package in ("rapidocr", "onnxruntime", "docx", "pdf2docx", "fitz", "pymupdf", "anthropic",
-                "mammoth", "yt_dlp", "imageio_ffmpeg"):
+                "mammoth", "yt_dlp", "imageio_ffmpeg", "openpyxl"):
     d, b, h = collect_all(package)
     datas += d
     binaries += b
@@ -25,7 +25,7 @@ a = Analysis(
     datas=datas,
     binaries=binaries,
     hiddenimports=hiddenimports,
-    excludes=["tkinter", "matplotlib", "IPython", "pytest"],
+    excludes=["tkinter", "IPython", "pytest"],
 )
 pyz = PYZ(a.pure)
 exe = EXE(

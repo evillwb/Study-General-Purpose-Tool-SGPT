@@ -118,6 +118,16 @@ bitrate, dub and subtitle language, filename style, file metadata, h265 and X/Tw
 
 Only download videos you own or have permission to save, and respect each site's terms.
 
+## 7. Kahoot and Quizlet
+
+- **Kahoot!**: Export → Kahoot gives a spreadsheet of the multiple-choice questions (exams,
+  MCQ quizzes and grammar tests). In Kahoot, create a kahoot, choose **Add question →
+  Import spreadsheet**, and pick the file. Long questions are shortened to Kahoot's limits
+  (120 characters, 75 per answer).
+- **Quizlet**: Export → Quizlet gives a text file. In Quizlet, create a set, choose
+  **Import**, and paste the file's contents (tab between term and definition, new line
+  between cards).
+
 ## Troubleshooting
 
 | Problem | Fix |
